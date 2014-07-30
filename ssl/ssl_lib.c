@@ -373,12 +373,11 @@ SSL *SSL_new(SSL_CTX *ctx)
 
 	if (s->ctx->alpn_client_proto_list)
 		{
-		s->alpn_client_proto_list =
-			OPENSSL_malloc(s->ctx->alpn_client_proto_list_len);
+		s->alpn_client_proto_list = BUF_memdup(
+			s->ctx->alpn_client_proto_list,
+			s->ctx->alpn_client_proto_list_len);
 		if (s->alpn_client_proto_list == NULL)
 			goto err;
-		memcpy(s->alpn_client_proto_list, s->ctx->alpn_client_proto_list,
-		       s->ctx->alpn_client_proto_list_len);
 		s->alpn_client_proto_list_len = s->ctx->alpn_client_proto_list_len;
 		}
 
@@ -551,14 +550,13 @@ ssl_cipher_preference_list_dup(
 	ret->ciphers = sk_SSL_CIPHER_dup(cipher_list->ciphers);
 	if (!ret->ciphers)
 		goto err;
-	ret->in_group_flags = OPENSSL_malloc(n);
+	ret->in_group_flags = BUF_memdup(cipher_list->in_group_flags, n);
 	if (!ret->in_group_flags)
 		goto err;
-	memcpy(ret->in_group_flags, cipher_list->in_group_flags, n);
 	return ret;
 
 err:
-	if (ret->ciphers)
+	if (ret && ret->ciphers)
 		sk_SSL_CIPHER_free(ret->ciphers);
 	if (ret)
 		OPENSSL_free(ret);
@@ -586,7 +584,7 @@ ssl_cipher_preference_list_from_ciphers(STACK_OF(SSL_CIPHER) *ciphers)
 	return ret;
 
 err:
-	if (ret->ciphers)
+	if (ret && ret->ciphers)
 		sk_SSL_CIPHER_free(ret->ciphers);
 	if (ret)
 		OPENSSL_free(ret);
@@ -1802,10 +1800,9 @@ int SSL_CTX_set_alpn_protos(SSL_CTX *ctx, const unsigned char* protos,
 	if (ctx->alpn_client_proto_list)
 		OPENSSL_free(ctx->alpn_client_proto_list);
 
-	ctx->alpn_client_proto_list = OPENSSL_malloc(protos_len);
+	ctx->alpn_client_proto_list = BUF_memdup(protos, protos_len);
 	if (!ctx->alpn_client_proto_list)
 		return 1;
-	memcpy(ctx->alpn_client_proto_list, protos, protos_len);
 	ctx->alpn_client_proto_list_len = protos_len;
 
 	return 0;
@@ -1822,10 +1819,9 @@ int SSL_set_alpn_protos(SSL *ssl, const unsigned char* protos,
 	if (ssl->alpn_client_proto_list)
 		OPENSSL_free(ssl->alpn_client_proto_list);
 
-	ssl->alpn_client_proto_list = OPENSSL_malloc(protos_len);
+	ssl->alpn_client_proto_list = BUF_memdup(protos, protos_len);
 	if (!ssl->alpn_client_proto_list)
 		return 1;
-	memcpy(ssl->alpn_client_proto_list, protos, protos_len);
 	ssl->alpn_client_proto_list_len = protos_len;
 
 	return 0;

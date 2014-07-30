@@ -509,7 +509,6 @@ static int mod_exp_recp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
      * how bit a window to do.  To do this we need to scan
      * forward until the last set bit before the end of the
      * window */
-    j = wstart;
     wvalue = 1;
     wend = 0;
     for (i = 1; i < window; i++) {
@@ -890,8 +889,7 @@ int BN_mod_exp_mont_consttime(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
   /* If the size of the operands allow it, perform the optimized
    * RSAZ exponentiation. For further information see
    * crypto/bn/rsaz_exp.c and accompanying assembly modules. */
-  if (((OPENSSL_ia32cap_P[2] & 0x80100) != 0x80100) /* check for MULX/AD*X */
-      && (16 == a->top) && (16 == p->top) && (BN_num_bits(m) == 1024) &&
+  if ((16 == a->top) && (16 == p->top) && (BN_num_bits(m) == 1024) &&
       rsaz_avx2_eligible()) {
     if (NULL == bn_wexpand(rr, 16))
       goto err;
@@ -983,7 +981,7 @@ int BN_mod_exp_mont_consttime(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
 
   /* Dedicated window==4 case improves 512-bit RSA sign by ~15%, but as
    * 512-bit RSA is hardly relevant, we omit it to spare size... */
-  if (window == 5) {
+  if (window == 5 && top > 1) {
     void bn_mul_mont_gather5(BN_ULONG * rp, const BN_ULONG * ap,
                              const void * table, const BN_ULONG * np,
                              const BN_ULONG * n0, int num, int power);

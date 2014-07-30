@@ -255,6 +255,11 @@ static int tls1_check_duplicate_extensions(const CBS *cbs)
 		num_extensions++;
 		}
 
+	if (num_extensions == 0)
+		{
+		return 1;
+		}
+
 	extension_types = (uint16_t*)OPENSSL_malloc(sizeof(uint16_t) * num_extensions);
 	if (extension_types == NULL)
 		{
@@ -1233,13 +1238,12 @@ unsigned char *ssl_add_clienthello_tlsext(SSL *s, unsigned char *buf, unsigned c
 		else if (s->session && s->tlsext_session_ticket &&
 			 s->tlsext_session_ticket->data)
 			{
-			ticklen = s->tlsext_session_ticket->length;
-			s->session->tlsext_tick = OPENSSL_malloc(ticklen);
+			s->session->tlsext_tick = BUF_memdup(
+			       s->tlsext_session_ticket->data,
+			       s->tlsext_session_ticket->length);
 			if (!s->session->tlsext_tick)
 				return NULL;
-			memcpy(s->session->tlsext_tick,
-			       s->tlsext_session_ticket->data,
-			       ticklen);
+			ticklen = s->tlsext_session_ticket->length;
 			s->session->tlsext_ticklen = ticklen;
 			}
 		else
@@ -1682,13 +1686,12 @@ static int tls1_alpn_handle_client_hello(SSL *s, CBS *cbs, int *out_alert)
 	if (r == SSL_TLSEXT_ERR_OK) {
 		if (s->s3->alpn_selected)
 			OPENSSL_free(s->s3->alpn_selected);
-		s->s3->alpn_selected = OPENSSL_malloc(selected_len);
+		s->s3->alpn_selected = BUF_memdup(selected, selected_len);
 		if (!s->s3->alpn_selected)
 			{
 			*out_alert = SSL_AD_INTERNAL_ERROR;
 			return 0;
 			}
-		memcpy(s->s3->alpn_selected, selected, selected_len);
 		s->s3->alpn_selected_len = selected_len;
 	}
 	return 1;
@@ -2906,7 +2909,11 @@ static int tls_decrypt_ticket(SSL *s, const unsigned char *etick, int eticklen,
 		}
 	EVP_DecryptUpdate(&ctx, sdec, &slen, p, eticklen);
 	if (EVP_DecryptFinal_ex(&ctx, sdec + slen, &mlen) <= 0)
+		{
+		EVP_CIPHER_CTX_cleanup(&ctx);
+		OPENSSL_free(sdec);
 		return 2;
+		}
 	slen += mlen;
 	EVP_CIPHER_CTX_cleanup(&ctx);
 	p = sdec;
