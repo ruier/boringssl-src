@@ -557,7 +557,7 @@ static const uint32_t rcon[] = {
     /* for 128-bit blocks, Rijndael never uses more than 10 rcon values */
 };
 
-int AES_set_encrypt_key(const uint8_t *key, const unsigned bits, AES_KEY *aeskey) {
+int AES_set_encrypt_key(const uint8_t *key, unsigned bits, AES_KEY *aeskey) {
   uint32_t *rk;
   int i = 0;
   uint32_t temp;
@@ -652,8 +652,7 @@ int AES_set_encrypt_key(const uint8_t *key, const unsigned bits, AES_KEY *aeskey
   return 0;
 }
 
-int AES_set_decrypt_key(const unsigned char *key, const unsigned bits,
-                        AES_KEY *aeskey) {
+int AES_set_decrypt_key(const uint8_t *key, unsigned bits, AES_KEY *aeskey) {
   uint32_t *rk;
   int i, j, status;
   uint32_t temp;
@@ -1074,4 +1073,31 @@ void AES_decrypt(const uint8_t *in, uint8_t *out, const AES_KEY *key) {
   PUTU32(out + 12, s3);
 }
 
-#endif
+#else
+
+/* In this case several functions are provided by asm code. However, one cannot
+ * control asm symbol visibility with command line flags and such so they are
+ * always hidden and wrapped by these C functions, which can be so
+ * controlled. */
+
+void asm_AES_encrypt(const uint8_t *in, uint8_t *out, const AES_KEY *key);
+void AES_encrypt(const uint8_t *in, uint8_t *out, const AES_KEY *key) {
+  asm_AES_encrypt(in, out, key);
+}
+
+void asm_AES_decrypt(const uint8_t *in, uint8_t *out, const AES_KEY *key);
+void AES_decrypt(const uint8_t *in, uint8_t *out, const AES_KEY *key) {
+  asm_AES_decrypt(in, out, key);
+}
+
+int asm_AES_set_encrypt_key(const uint8_t *key, unsigned bits, AES_KEY *aeskey);
+int AES_set_encrypt_key(const uint8_t *key, unsigned bits, AES_KEY *aeskey) {
+  return asm_AES_set_encrypt_key(key, bits, aeskey);
+}
+
+int asm_AES_set_decrypt_key(const uint8_t *key, unsigned bits, AES_KEY *aeskey);
+int AES_set_decrypt_key(const uint8_t *key, unsigned bits, AES_KEY *aeskey) {
+  return asm_AES_set_decrypt_key(key, bits, aeskey);
+}
+
+#endif  /* OPENSSL_NO_ASM || (!OPENSSL_X86 && !OPENSSL_X86_64 && !OPENSSL_ARM) */
