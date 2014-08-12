@@ -806,6 +806,10 @@ DECLARE_ASN1_FUNCTIONS(X509_CERT_AUX)
 
 DECLARE_ASN1_FUNCTIONS(X509_CERT_PAIR)
 
+/* X509_up_ref adds one to the reference count of |x| and returns
+ * |x|. */
+OPENSSL_EXPORT X509 *X509_up_ref(X509 *x);
+
 OPENSSL_EXPORT int X509_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
 	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func);
 OPENSSL_EXPORT int X509_set_ex_data(X509 *r, int idx, void *arg);
@@ -1190,6 +1194,11 @@ OPENSSL_EXPORT int X509_TRUST_get_trust(X509_TRUST *xp);
  * appends the included certificates to |out_certs|. It returns one on success
  * and zero on error. */
 OPENSSL_EXPORT int PKCS7_get_certificates(STACK_OF(X509) *out_certs, CBS *cbs);
+
+/* PKCS7_bundle_certificates appends a PKCS#7, SignedData structure containing
+ * |certs| to |cbb|. It returns one on success and zero on error. */
+OPENSSL_EXPORT int PKCS7_bundle_certificates(
+    CBB *out, const STACK_OF(X509) *certs);
 
 
 /* EVP_PK values indicate the algorithm of the public key in a certificate. */

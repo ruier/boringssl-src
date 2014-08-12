@@ -596,9 +596,6 @@ int ssl3_write_bytes(SSL *s, int type, const void *buf_, int len)
 		    !s->s3->record_split_done)
 			{
 			fragment = 1;
-			/* The first byte will be in its own record, so we
-			 * can write an extra byte. */
-			max++;
 			/* record_split_done records that the splitting has
 			 * been done in case we hit an SSL_WANT_WRITE condition.
 			 * In that case, we don't need to do the split again. */
@@ -614,6 +611,7 @@ int ssl3_write_bytes(SSL *s, int type, const void *buf_, int len)
 		if (i <= 0)
 			{
 			s->s3->wnum=tot;
+			s->s3->record_split_done = 0;
 			return i;
 			}
 
@@ -1367,7 +1365,6 @@ start:
 	switch (rr->type)
 		{
 	default:
-#ifndef OPENSSL_NO_TLS
 		/* TLS up to v1.1 just ignores unknown message types:
 		 * TLS v1.2 give an unexpected message alert.
 		 */
@@ -1376,7 +1373,6 @@ start:
 			rr->length = 0;
 			goto start;
 			}
-#endif
 		al=SSL_AD_UNEXPECTED_MESSAGE;
 		OPENSSL_PUT_ERROR(SSL, ssl3_read_bytes, SSL_R_UNEXPECTED_RECORD);
 		goto f_err;

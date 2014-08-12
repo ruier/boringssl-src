@@ -6,9 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
+	"path"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -216,17 +219,6 @@ var testCases = []testCase{
 		expectedError: ":UNEXPECTED_MESSAGE:",
 	},
 	{
-		testType: serverTest,
-		name:     "NPNServerTest",
-		config: Config{
-			NextProtos: []string{"bar"},
-		},
-		flags: []string{
-			"-advertise-npn", "\x03foo\x03bar\x03baz",
-			"-expect-next-proto", "bar",
-		},
-	},
-	{
 		name: "SkipChangeCipherSpec-Client",
 		config: Config{
 			Bugs: ProtocolBugs{
@@ -321,19 +313,6 @@ var testCases = []testCase{
 		expectedError: ":CCS_RECEIVED_EARLY:",
 	},
 	{
-		name: "SessionTicketsDisabled-Client",
-		config: Config{
-			SessionTicketsDisabled: true,
-		},
-	},
-	{
-		testType: serverTest,
-		name:     "SessionTicketsDisabled-Server",
-		config: Config{
-			SessionTicketsDisabled: true,
-		},
-	},
-	{
 		name: "SkipNewSessionTicket",
 		config: Config{
 			Bugs: ProtocolBugs{
@@ -344,27 +323,49 @@ var testCases = []testCase{
 		expectedError: ":CCS_RECEIVED_EARLY:",
 	},
 	{
-		name: "FalseStart",
-		config: Config{
-			CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
-			NextProtos: []string{"foo"},
-		},
-		flags: []string{
-			"-false-start",
-			"-select-next-proto", "foo",
-		},
-		resumeSession: true,
-	},
-	{
 		name: "FalseStart-SessionTicketsDisabled",
 		config: Config{
-			CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
-			NextProtos: []string{"foo"},
+			CipherSuites:           []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
+			NextProtos:             []string{"foo"},
 			SessionTicketsDisabled: true,
 		},
 		flags: []string{
 			"-false-start",
 			"-select-next-proto", "foo",
+		},
+	},
+	{
+		testType: serverTest,
+		name:     "SendV2ClientHello",
+		config: Config{
+			// Choose a cipher suite that does not involve
+			// elliptic curves, so no extensions are
+			// involved.
+			CipherSuites: []uint16{TLS_RSA_WITH_RC4_128_SHA},
+			Bugs: ProtocolBugs{
+				SendV2ClientHello: true,
+			},
+		},
+	},
+	{
+		testType: serverTest,
+		name:     "FallbackSCSV",
+		config: Config{
+			MaxVersion: VersionTLS11,
+			Bugs: ProtocolBugs{
+				SendFallbackSCSV: true,
+			},
+		},
+		shouldFail:    true,
+		expectedError: ":INAPPROPRIATE_FALLBACK:",
+	},
+	{
+		testType: serverTest,
+		name:     "FallbackSCSV-VersionMatch",
+		config: Config{
+			Bugs: ProtocolBugs{
+				SendFallbackSCSV: true,
+			},
 		},
 	},
 }
@@ -381,6 +382,13 @@ func doExchange(testType testType, config *Config, conn net.Conn, messageLen int
 	if err := tlsConn.Handshake(); err != nil {
 		return err
 	}
+
+	if messageLen < 0 {
+		// Read until EOF.
+		_, err := io.Copy(ioutil.Discard, tlsConn)
+		return err
+	}
+
 	if messageLen == 0 {
 		messageLen = 32
 	}
@@ -445,11 +453,11 @@ func openSocketPair() (shimEnd *os.File, conn net.Conn) {
 	return shimEnd, conn
 }
 
-func runTest(test *testCase) error {
+func runTest(test *testCase, buildDir string) error {
 	shimEnd, conn := openSocketPair()
 	shimEndResume, connResume := openSocketPair()
 
-	const shim_path = "../../../build/ssl/test/bssl_shim"
+	shim_path := path.Join(buildDir, "ssl/test/bssl_shim")
 	flags := []string{}
 	if test.testType == clientTest {
 		flags = append(flags, "client")
@@ -571,20 +579,27 @@ var testCipherSuites = []struct {
 	id   uint16
 }{
 	{"3DES-SHA", TLS_RSA_WITH_3DES_EDE_CBC_SHA},
+	{"AES128-GCM", TLS_RSA_WITH_AES_128_GCM_SHA256},
 	{"AES128-SHA", TLS_RSA_WITH_AES_128_CBC_SHA},
+	{"AES256-GCM", TLS_RSA_WITH_AES_256_GCM_SHA384},
 	{"AES256-SHA", TLS_RSA_WITH_AES_256_CBC_SHA},
+	{"DHE-RSA-3DES-SHA", TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA},
+	{"DHE-RSA-AES128-GCM", TLS_DHE_RSA_WITH_AES_128_GCM_SHA256},
+	{"DHE-RSA-AES128-SHA", TLS_DHE_RSA_WITH_AES_128_CBC_SHA},
+	{"DHE-RSA-AES256-GCM", TLS_DHE_RSA_WITH_AES_256_GCM_SHA384},
+	{"DHE-RSA-AES256-SHA", TLS_DHE_RSA_WITH_AES_256_CBC_SHA},
 	{"ECDHE-ECDSA-AES128-GCM", TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 	{"ECDHE-ECDSA-AES128-SHA", TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA},
 	{"ECDHE-ECDSA-AES256-SHA", TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA},
 	{"ECDHE-ECDSA-RC4-SHA", TLS_ECDHE_ECDSA_WITH_RC4_128_SHA},
 	{"ECDHE-RSA-3DES-SHA", TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA},
 	{"ECDHE-RSA-AES128-GCM", TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
-	{"ECDHE-RSA-AES256-GCM", TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384},
 	{"ECDHE-RSA-AES128-SHA", TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA},
+	{"ECDHE-RSA-AES256-GCM", TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384},
 	{"ECDHE-RSA-AES256-SHA", TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA},
 	{"ECDHE-RSA-RC4-SHA", TLS_ECDHE_RSA_WITH_RC4_128_SHA},
-	{"RC4-SHA", TLS_RSA_WITH_RC4_128_SHA},
 	{"RC4-MD5", TLS_RSA_WITH_RC4_128_MD5},
+	{"RC4-SHA", TLS_RSA_WITH_RC4_128_SHA},
 }
 
 func addCipherSuiteTests() {
@@ -707,6 +722,38 @@ func addCBCPaddingTests() {
 	})
 }
 
+func addCBCSplittingTests() {
+	testCases = append(testCases, testCase{
+		name: "CBCRecordSplitting",
+		config: Config{
+			MaxVersion:   VersionTLS10,
+			MinVersion:   VersionTLS10,
+			CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA},
+		},
+		messageLen: -1, // read until EOF
+		flags: []string{
+			"-async",
+			"-write-different-record-sizes",
+			"-cbc-record-splitting",
+		},
+	},
+	testCase{
+		name: "CBCRecordSplittingPartialWrite",
+		config: Config{
+			MaxVersion:   VersionTLS10,
+			MinVersion:   VersionTLS10,
+			CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA},
+		},
+		messageLen: -1, // read until EOF
+		flags: []string{
+			"-async",
+			"-write-different-record-sizes",
+			"-cbc-record-splitting",
+			"-partial-write",
+		},
+	})
+}
+
 func addClientAuthTests() {
 	// Add a dummy cert pool to stress certificate authority parsing.
 	// TODO(davidben): Add tests that those values parse out correctly.
@@ -781,12 +828,141 @@ func addClientAuthTests() {
 	}
 }
 
-func worker(statusChan chan statusMsg, c chan *testCase, wg *sync.WaitGroup) {
+// Adds tests that try to cover the range of the handshake state machine, under
+// various conditions. Some of these are redundant with other tests, but they
+// only cover the synchronous case.
+func addStateMachineCoverageTests(async bool, splitHandshake bool) {
+	var suffix string
+	var flags []string
+	var maxHandshakeRecordLength int
+	if async {
+		suffix = "-Async"
+		flags = append(flags, "-async")
+	} else {
+		suffix = "-Sync"
+	}
+	if splitHandshake {
+		suffix += "-SplitHandshakeRecords"
+		maxHandshakeRecordLength = 10
+	}
+
+	// Basic handshake, with resumption. Client and server.
+	testCases = append(testCases, testCase{
+		name: "Basic-Client" + suffix,
+		config: Config{
+			Bugs: ProtocolBugs{
+				MaxHandshakeRecordLength: maxHandshakeRecordLength,
+			},
+		},
+		flags: flags,
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "Basic-Server" + suffix,
+		config: Config{
+			Bugs: ProtocolBugs{
+				MaxHandshakeRecordLength: maxHandshakeRecordLength,
+			},
+		},
+		flags: flags,
+	})
+
+	// No session ticket support; server doesn't send NewSessionTicket.
+	testCases = append(testCases, testCase{
+		name: "SessionTicketsDisabled-Client" + suffix,
+		config: Config{
+			SessionTicketsDisabled: true,
+			Bugs: ProtocolBugs{
+				MaxHandshakeRecordLength: maxHandshakeRecordLength,
+			},
+		},
+		flags: flags,
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "SessionTicketsDisabled-Server" + suffix,
+		config: Config{
+			SessionTicketsDisabled: true,
+			Bugs: ProtocolBugs{
+				MaxHandshakeRecordLength: maxHandshakeRecordLength,
+			},
+		},
+		flags: flags,
+	})
+
+	// NPN on client and server; results in post-handshake message.
+	testCases = append(testCases, testCase{
+		name: "NPN-Client" + suffix,
+		config: Config{
+			CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
+			NextProtos:   []string{"foo"},
+			Bugs: ProtocolBugs{
+				MaxHandshakeRecordLength: maxHandshakeRecordLength,
+			},
+		},
+		flags: append(flags, "-select-next-proto", "foo"),
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "NPN-Server" + suffix,
+		config: Config{
+			NextProtos: []string{"bar"},
+			Bugs: ProtocolBugs{
+				MaxHandshakeRecordLength: maxHandshakeRecordLength,
+			},
+		},
+		flags: append(flags,
+			"-advertise-npn", "\x03foo\x03bar\x03baz",
+			"-expect-next-proto", "bar"),
+	})
+
+	// Client does False Start and negotiates NPN.
+	testCases = append(testCases, testCase{
+		name: "FalseStart" + suffix,
+		config: Config{
+			CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
+			NextProtos:   []string{"foo"},
+			Bugs: ProtocolBugs{
+				MaxHandshakeRecordLength: maxHandshakeRecordLength,
+			},
+		},
+		flags: append(flags,
+			"-false-start",
+			"-select-next-proto", "foo"),
+		resumeSession: true,
+	})
+
+	// TLS client auth.
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "ClientAuth-Client" + suffix,
+		config: Config{
+			CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
+			ClientAuth:   RequireAnyClientCert,
+			Bugs: ProtocolBugs{
+				MaxHandshakeRecordLength: maxHandshakeRecordLength,
+			},
+		},
+		flags: append(flags,
+			"-cert-file", rsaCertificateFile,
+			"-key-file", rsaKeyFile),
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "ClientAuth-Server" + suffix,
+		config: Config{
+			Certificates: []Certificate{rsaCertificate},
+		},
+		flags: append(flags, "-require-any-client-certificate"),
+	})
+}
+
+func worker(statusChan chan statusMsg, c chan *testCase, buildDir string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for test := range c {
 		statusChan <- statusMsg{test: test, started: true}
-		err := runTest(test)
+		err := runTest(test, buildDir)
 		statusChan <- statusMsg{test: test, err: err}
 	}
 }
@@ -822,17 +998,25 @@ func statusPrinter(doneChan chan struct{}, statusChan chan statusMsg, total int)
 
 func main() {
 	var flagTest *string = flag.String("test", "", "The name of a test to run, or empty to run all tests")
+	var flagNumWorkers *int = flag.Int("num-workers", runtime.NumCPU(), "The number of workers to run in parallel.")
+	var flagBuildDir *string = flag.String("build-dir", "../../../build", "The build directory to run the shim from.")
 
 	flag.Parse()
 
 	addCipherSuiteTests()
 	addBadECDSASignatureTests()
 	addCBCPaddingTests()
+	addCBCSplittingTests()
 	addClientAuthTests()
+	for _, async := range []bool{false, true} {
+		for _, splitHandshake := range []bool{false, true} {
+			addStateMachineCoverageTests(async, splitHandshake)
+		}
+	}
 
 	var wg sync.WaitGroup
 
-	const numWorkers = 64
+	numWorkers := *flagNumWorkers
 
 	statusChan := make(chan statusMsg, numWorkers)
 	testChan := make(chan *testCase, numWorkers)
@@ -842,7 +1026,7 @@ func main() {
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go worker(statusChan, testChan, &wg)
+		go worker(statusChan, testChan, *flagBuildDir, &wg)
 	}
 
 	for i := range testCases {

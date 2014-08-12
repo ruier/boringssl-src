@@ -158,8 +158,6 @@
 #include <openssl/ssl.h>
 #include <openssl/stack.h>
 
-#undef PKCS1_CHECK
-
 #define c2l(c,l)	(l = ((unsigned long)(*((c)++)))     , \
 			 l|=(((unsigned long)(*((c)++)))<< 8), \
 			 l|=(((unsigned long)(*((c)++)))<<16), \
@@ -692,19 +690,6 @@ struct ssl_aead_ctx_st
 	char variable_nonce_included_in_record;
 	};
 
-#ifndef OPENSSL_NO_BUF_FREELISTS
-typedef struct ssl3_buf_freelist_st
-	{
-	size_t chunklen;
-	unsigned int len;
-	struct ssl3_buf_freelist_entry_st *head;
-	} SSL3_BUF_FREELIST;
-
-typedef struct ssl3_buf_freelist_entry_st
-	{
-	struct ssl3_buf_freelist_entry_st *next;
-	} SSL3_BUF_FREELIST_ENTRY;
-#endif
 
 extern SSL3_ENC_METHOD ssl3_undef_enc_method;
 extern SSL_CIPHER ssl3_ciphers[];
@@ -1151,11 +1136,7 @@ int ssl_parse_serverhello_tlsext(SSL *s, CBS *cbs);
 int ssl_prepare_clienthello_tlsext(SSL *s);
 int ssl_prepare_serverhello_tlsext(SSL *s);
 
-#ifdef OPENSSL_NO_SHA256
-#define tlsext_tick_md	EVP_sha1
-#else
 #define tlsext_tick_md	EVP_sha256
-#endif
 int tls1_process_ticket(SSL *s, const struct ssl_early_callback_ctx *ctx,
 			SSL_SESSION **ret);
 
