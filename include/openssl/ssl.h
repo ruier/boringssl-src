@@ -547,10 +547,7 @@ struct ssl_session_st
 /* Set to always use the tmp_rsa key when doing RSA operations,
  * even when this violates protocol specs */
 #define SSL_OP_CIPHER_SERVER_PREFERENCE			0x00400000L
-/* If set, a server will allow a client to issue a SSLv3.0 version number
- * as latest version supported in the premaster secret, even when TLSv1.0
- * (version 3.1) was announced in the client hello. Normally this is
- * forbidden to prevent version rollback attacks. */
+/* SSL_OP_TLS_ROLLBACK_BUG does nothing. */
 #define SSL_OP_TLS_ROLLBACK_BUG				0x00800000L
 
 #define SSL_OP_NO_SSLv2					0x01000000L
@@ -606,13 +603,6 @@ struct ssl_session_st
  * enforcing certifcate chain algorithms. When this is set we enforce them.
  */
 #define SSL_CERT_FLAG_TLS_STRICT		0x00000001L
-
-/* Suite B modes, takes same values as certificate verify flags */
-#define SSL_CERT_FLAG_SUITEB_128_LOS_ONLY	0x10000
-/* Suite B 192 bit only mode */
-#define SSL_CERT_FLAG_SUITEB_192_LOS		0x20000
-/* Suite B 128 bit mode allowing 192 bit algorithms */
-#define SSL_CERT_FLAG_SUITEB_128_LOS		0x30000
 
 /* Perform all sorts of protocol violations for testing purposes */
 #define SSL_CERT_FLAG_BROKEN_PROTOCOL		0x10000000
@@ -674,6 +664,11 @@ struct ssl_session_st
  * attacks. */
 #define SSL_MODE_CBC_RECORD_SPLITTING 0x00000100L
 
+/* SSL_MODE_NO_SESSION_CREATION will cause any attempts to create a session to
+ * fail with SSL_R_SESSION_MAY_NOT_BE_CREATED. This can be used to enforce that
+ * session resumption is used for a given SSL*. */
+#define SSL_MODE_NO_SESSION_CREATION 0x00000200L
+
 /* Note: SSL[_CTX]_set_{options,mode} use |= op on the previous value,
  * they cannot be used to clear bits. */
 
@@ -726,11 +721,7 @@ OPENSSL_EXPORT void SSL_set_msg_callback(SSL *ssl, void (*cb)(int write_p, int v
 struct ssl_aead_ctx_st;
 typedef struct ssl_aead_ctx_st SSL_AEAD_CTX;
 
-#if defined(OPENSSL_SYS_MSDOS) && !defined(OPENSSL_SYS_WIN32)
-#define SSL_MAX_CERT_LIST_DEFAULT 1024*30 /* 30k max cert list :-) */
-#else
-#define SSL_MAX_CERT_LIST_DEFAULT 1024*100 /* 100k max cert list :-) */
-#endif
+#define SSL_MAX_CERT_LIST_DEFAULT 1024*100 /* 100k max cert list */
 
 #define SSL_SESSION_CACHE_MAX_SIZE_DEFAULT	(1024*20)
 
@@ -1952,6 +1943,9 @@ OPENSSL_EXPORT const SSL_CIPHER *SSL_get_current_cipher(const SSL *s);
 OPENSSL_EXPORT int	SSL_CIPHER_get_bits(const SSL_CIPHER *c,int *alg_bits);
 OPENSSL_EXPORT const char *	SSL_CIPHER_get_version(const SSL_CIPHER *c);
 OPENSSL_EXPORT const char *	SSL_CIPHER_get_name(const SSL_CIPHER *c);
+/* SSL_CIPHER_get_kx_name returns a string that describes the key-exchange
+ * method used by |c|. For example, "ECDHE-ECDSA". */
+OPENSSL_EXPORT const char *	SSL_CIPHER_get_kx_name(const SSL_CIPHER *cipher);
 OPENSSL_EXPORT unsigned long 	SSL_CIPHER_get_id(const SSL_CIPHER *c);
 
 OPENSSL_EXPORT int	SSL_get_fd(const SSL *s);
@@ -2091,7 +2085,12 @@ OPENSSL_EXPORT long	SSL_CTX_ctrl(SSL_CTX *ctx,int cmd, long larg, void *parg);
 OPENSSL_EXPORT long	SSL_CTX_callback_ctrl(SSL_CTX *, int, void (*)(void));
 
 OPENSSL_EXPORT int	SSL_get_error(const SSL *s,int ret_code);
+/* SSL_get_version returns a string describing the TLS version used by |s|. For
+ * example, "TLSv1.2" or "SSLv3". */
 OPENSSL_EXPORT const char *SSL_get_version(const SSL *s);
+/* SSL_SESSION_get_version returns a string describing the TLS version used by
+ * |sess|. For example, "TLSv1.2" or "SSLv3". */
+OPENSSL_EXPORT const char *SSL_SESSION_get_version(const SSL_SESSION *sess);
 
 OPENSSL_EXPORT int SSL_CIPHER_is_AES(const SSL_CIPHER *c);
 OPENSSL_EXPORT int SSL_CIPHER_has_MD5_HMAC(const SSL_CIPHER *c);
@@ -2503,6 +2502,7 @@ OPENSSL_EXPORT void ERR_load_SSL_strings(void);
 #define SSL_F_tls1_aead_ctx_init 280
 #define SSL_F_tls1_check_duplicate_extensions 281
 #define SSL_F_ssl3_expect_change_cipher_spec 282
+#define SSL_F_ssl23_get_v2_client_hello 283
 #define SSL_R_UNABLE_TO_FIND_ECDH_PARAMETERS 100
 #define SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC 101
 #define SSL_R_INVALID_NULL_CMD_NAME 102
@@ -2815,6 +2815,7 @@ OPENSSL_EXPORT void ERR_load_SSL_strings(void);
 #define SSL_R_DECODE_ERROR 439
 #define SSL_R_UNPROCESSED_HANDSHAKE_DATA 440
 #define SSL_R_HANDSHAKE_RECORD_BEFORE_CCS 441
+#define SSL_R_SESSION_MAY_NOT_BE_CREATED 442
 #define SSL_R_SSLV3_ALERT_UNEXPECTED_MESSAGE 1010
 #define SSL_R_SSLV3_ALERT_BAD_RECORD_MAC 1020
 #define SSL_R_TLSV1_ALERT_DECRYPTION_FAILED 1021

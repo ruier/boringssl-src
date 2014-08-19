@@ -274,6 +274,12 @@ int ssl_get_new_session(SSL *s, int session)
 	SSL_SESSION *ss=NULL;
 	GEN_SESSION_CB cb = def_generate_session_id;
 
+	if (s->mode & SSL_MODE_NO_SESSION_CREATION)
+		{
+		OPENSSL_PUT_ERROR(SSL, ssl_get_new_session, SSL_R_SESSION_MAY_NOT_BE_CREATED);
+		return 0;
+		}
+
 	if ((ss=SSL_SESSION_new()) == NULL) return(0);
 
 	/* If the context has a default timeout, use it */
@@ -552,15 +558,6 @@ int ssl_get_prev_session(SSL *s, const struct ssl_early_callback_ctx *ctx)
 		OPENSSL_PUT_ERROR(SSL, ssl_get_prev_session, SSL_R_SESSION_ID_CONTEXT_UNINITIALIZED);
 		fatal = 1;
 		goto err;
-		}
-
-	if (ret->cipher == NULL)
-		{
-		/* The cipher id has a leading 0x03 to be removed (and then put
-		 * back for the binary search) as a remnant of SSLv2 support. */
-		ret->cipher = ssl3_get_cipher_by_value(ret->cipher_id & 0xffff);
-		if (ret->cipher == NULL)
-			goto err;
 		}
 
 	if (ret->timeout < (long)(time(NULL) - ret->time)) /* timeout */

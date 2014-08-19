@@ -275,6 +275,11 @@ int dtls1_connect(SSL *s)
 				if (s->hit)
 					{
 					s->state=SSL3_ST_CR_FINISHED_A;
+					if (s->tlsext_ticket_expected)
+						{
+						/* receive renewed session ticket */
+						s->state=SSL3_ST_CR_SESSION_TICKET_A;
+						}
 					}
 				else
 					s->state=DTLS1_ST_CR_HELLO_VERIFY_REQUEST_A;
@@ -298,9 +303,7 @@ int dtls1_connect(SSL *s)
 
 		case SSL3_ST_CR_CERT_A:
 		case SSL3_ST_CR_CERT_B:
-			/* Check if it is anon DH or PSK */
-			if (!(s->s3->tmp.new_cipher->algorithm_auth & SSL_aNULL) &&
-			    !(s->s3->tmp.new_cipher->algorithm_mkey & SSL_kPSK))
+			if (ssl_cipher_has_server_public_key(s->s3->tmp.new_cipher))
 				{
 				ret=ssl3_get_server_certificate(s);
 				if (ret <= 0) goto end;
@@ -582,9 +585,10 @@ end:
 
 static int dtls1_get_hello_verify(SSL *s)
 	{
-	int n, al, ok = 0;
-	unsigned char *data;
-	unsigned int cookie_len;
+	long n;
+	int al, ok = 0;
+	CBS hello_verify_request, cookie;
+	uint16_t server_version;
 
 	s->first_packet = 1;
 	n=s->method->ssl_get_message(s,
@@ -604,10 +608,19 @@ static int dtls1_get_hello_verify(SSL *s)
 		return(1);
 		}
 
-	data = s->init_msg;
+	CBS_init(&hello_verify_request, s->init_msg, n);
+
+	if (!CBS_get_u16(&hello_verify_request, &server_version) ||
+		!CBS_get_u8_length_prefixed(&hello_verify_request, &cookie) ||
+		CBS_len(&hello_verify_request) != 0)
+		{
+		al = SSL_AD_DECODE_ERROR;
+		OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_status, SSL_R_DECODE_ERROR);
+		goto f_err;
+		}
+
 #if 0
-	if (s->method->version != DTLS_ANY_VERSION &&
-		((data[0] != (s->version>>8)) || (data[1] != (s->version&0xff))))
+	if (s->method->version != DTLS_ANY_VERSION && server_version != s->version)
 		{
 		OPENSSL_PUT_ERROR(SSL, dtls1_get_hello_verify, SSL_R_WRONG_SSL_VERSION);
 		s->version=(s->version&0xff00)|data[1];
@@ -615,17 +628,15 @@ static int dtls1_get_hello_verify(SSL *s)
 		goto f_err;
 		}
 #endif
-	data+=2;
 
-	cookie_len = *(data++);
-	if ( cookie_len > sizeof(s->d1->cookie))
+	if (CBS_len(&cookie) > sizeof(s->d1->cookie))
 		{
 		al=SSL_AD_ILLEGAL_PARAMETER;
 		goto f_err;
 		}
 
-	memcpy(s->d1->cookie, data, cookie_len);
-	s->d1->cookie_len = cookie_len;
+	memcpy(s->d1->cookie, CBS_data(&cookie), CBS_len(&cookie));
+	s->d1->cookie_len = CBS_len(&cookie);
 
 	s->d1->send_cookie = 1;
 	return 1;

@@ -477,11 +477,9 @@ typedef struct cert_pkey_st
 	 */
 	int valid_flags;
 	} CERT_PKEY;
-/* Retrieve Suite B flags */
-#define tls1_suiteb(s)	(s->cert->cert_flags & SSL_CERT_FLAG_SUITEB_128_LOS)
-/* Uses to check strict mode: suite B modes are always strict */
+
 #define SSL_CERT_FLAGS_CHECK_TLS_STRICT \
-	(SSL_CERT_FLAG_SUITEB_128_LOS|SSL_CERT_FLAG_TLS_STRICT)
+	SSL_CERT_FLAG_TLS_STRICT
 
 typedef struct cert_st
 	{
@@ -710,9 +708,9 @@ const SSL_METHOD *func_name(void)  \
 	{ \
 	static const SSL_METHOD func_name##_data= { \
 		version, \
-		tls1_new, \
-		tls1_clear, \
-		tls1_free, \
+		ssl3_new, \
+		ssl3_clear, \
+		ssl3_free, \
 		s_accept, \
 		s_connect, \
 		ssl3_read, \
@@ -731,7 +729,7 @@ const SSL_METHOD *func_name(void)  \
 		ssl3_num_ciphers, \
 		ssl3_get_cipher, \
 		s_get_meth, \
-		tls1_default_timeout, \
+		ssl3_default_timeout, \
 		&enc_data, \
 		ssl_undefined_void_function, \
 		ssl3_callback_ctrl, \
@@ -780,9 +778,9 @@ const SSL_METHOD *func_name(void)  \
 	{ \
 	static const SSL_METHOD func_name##_data= { \
 	TLS1_2_VERSION, \
-	tls1_new, \
-	tls1_clear, \
-	tls1_free, \
+	ssl3_new, \
+	ssl3_clear, \
+	ssl3_free, \
 	s_accept, \
 	s_connect, \
 	ssl23_read, \
@@ -1002,7 +1000,6 @@ void dtls1_get_message_header(unsigned char *data, struct hm_header_st *msg_hdr)
 void dtls1_get_ccs_header(unsigned char *data, struct ccs_header_st *ccs_hdr);
 void dtls1_reset_seq_numbers(SSL *s, int rw);
 long dtls1_default_timeout(void);
-struct timeval* dtls1_get_timeout(SSL *s, struct timeval* timeleft);
 int dtls1_check_timeout_num(SSL *s);
 int dtls1_handle_timeout(SSL *s);
 const SSL_CIPHER *dtls1_get_cipher(unsigned int u);
@@ -1054,12 +1051,6 @@ int ssl23_accept(SSL *s);
 int ssl23_connect(SSL *s);
 int ssl23_read_bytes(SSL *s, int n);
 int ssl23_write_bytes(SSL *s);
-
-int tls1_new(SSL *s);
-void tls1_free(SSL *s);
-void tls1_clear(SSL *s);
-long tls1_ctrl(SSL *s,int cmd, long larg, void *parg);
-long tls1_callback_ctrl(SSL *s,int cmd, void (*fp)(void));
 
 int dtls1_new(SSL *s);
 int	dtls1_accept(SSL *s);

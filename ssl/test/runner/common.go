@@ -25,10 +25,11 @@ const (
 )
 
 const (
-	maxPlaintext    = 16384        // maximum plaintext payload length
-	maxCiphertext   = 16384 + 2048 // maximum ciphertext payload length
-	recordHeaderLen = 5            // record header length
-	maxHandshake    = 65536        // maximum handshake we support (protocol max is 16 MB)
+	maxPlaintext        = 16384        // maximum plaintext payload length
+	maxCiphertext       = 16384 + 2048 // maximum ciphertext payload length
+	tlsRecordHeaderLen  = 5            // record header length
+	dtlsRecordHeaderLen = 13
+	maxHandshake        = 65536 // maximum handshake we support (protocol max is 16 MB)
 
 	minVersion = VersionSSL30
 	maxVersion = VersionTLS12
@@ -48,6 +49,7 @@ const (
 const (
 	typeClientHello        uint8 = 1
 	typeServerHello        uint8 = 2
+	typeHelloVerifyRequest uint8 = 3
 	typeNewSessionTicket   uint8 = 4
 	typeCertificate        uint8 = 11
 	typeServerKeyExchange  uint8 = 12
@@ -393,9 +395,31 @@ type ProtocolBugs struct {
 	SendFallbackSCSV bool
 
 	// MaxHandshakeRecordLength, if non-zero, is the maximum size of a
-	// handshake record. Handshake messages will be split at the record
-	// layer.
+	// handshake record. Handshake messages will be split into multiple
+	// records at the specified size, except that the client_version will
+	// never be fragmented.
 	MaxHandshakeRecordLength int
+
+	// FragmentClientVersion will allow MaxHandshakeRecordLength to apply to
+	// the first 6 bytes of the ClientHello.
+	FragmentClientVersion bool
+
+	// RsaClientKeyExchangeVersion, if non-zero, causes the client to send a
+	// ClientKeyExchange with the specified version rather than the
+	// client_version when performing the RSA key exchange.
+	RsaClientKeyExchangeVersion uint16
+
+	// RenewTicketOnResume causes the server to renew the session ticket and
+	// send a NewSessionTicket message during an abbreviated handshake.
+	RenewTicketOnResume bool
+
+	// SendClientVersion, if non-zero, causes the client to send a different
+	// TLS version in the ClientHello than the maximum supported version.
+	SendClientVersion uint16
+
+	// SkipHelloVerifyRequest causes a DTLS server to skip the
+	// HelloVerifyRequest message.
+	SkipHelloVerifyRequest bool
 }
 
 func (c *Config) serverInit() {

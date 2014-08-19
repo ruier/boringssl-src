@@ -150,24 +150,12 @@
 #define SSL_ENC_DES_IDX		0
 #define SSL_ENC_3DES_IDX	1
 #define SSL_ENC_RC4_IDX		2
-#define SSL_ENC_RC2_IDX		3
-#define SSL_ENC_IDEA_IDX	4
-#define SSL_ENC_NULL_IDX	5
-#define SSL_ENC_AES128_IDX	6
-#define SSL_ENC_AES256_IDX	7
-#define SSL_ENC_CAMELLIA128_IDX	8
-#define SSL_ENC_CAMELLIA256_IDX	9
-#define SSL_ENC_SEED_IDX    	10
-#define SSL_ENC_AES128GCM_IDX	11
-#define SSL_ENC_AES256GCM_IDX	12
-#define SSL_ENC_NUM_IDX		13
+#define SSL_ENC_AES128_IDX	3
+#define SSL_ENC_AES256_IDX	4
+#define SSL_ENC_NUM_IDX		5
 
 
 static const EVP_CIPHER *ssl_cipher_methods[SSL_ENC_NUM_IDX]= { 0 };
-
-#define SSL_COMP_NULL_IDX	0
-#define SSL_COMP_ZLIB_IDX	1
-#define SSL_COMP_NUM_IDX	2
 
 #define SSL_MD_MD5_IDX	0
 #define SSL_MD_SHA1_IDX	1
@@ -308,9 +296,6 @@ void ssl_load_ciphers(void)
 	ssl_cipher_methods[SSL_ENC_AES128_IDX]= EVP_aes_128_cbc();
 	ssl_cipher_methods[SSL_ENC_AES256_IDX]= EVP_aes_256_cbc();
 
-	ssl_cipher_methods[SSL_ENC_AES128GCM_IDX]= EVP_aes_128_gcm();
-	ssl_cipher_methods[SSL_ENC_AES256GCM_IDX]= EVP_aes_256_gcm();
-
 	ssl_digest_methods[SSL_MD_MD5_IDX]= EVP_md5();
 	ssl_mac_secret_size[SSL_MD_MD5_IDX]= EVP_MD_size(EVP_md5());
 	assert(ssl_mac_secret_size[SSL_MD_MD5_IDX] >= 0);
@@ -389,35 +374,11 @@ int ssl_cipher_get_evp(const SSL_SESSION *s, const EVP_CIPHER **enc,
 	case SSL_RC4:
 		i=SSL_ENC_RC4_IDX;
 		break;
-	case SSL_RC2:
-		i=SSL_ENC_RC2_IDX;
-		break;
-	case SSL_IDEA:
-		i=SSL_ENC_IDEA_IDX;
-		break;
-	case SSL_eNULL:
-		i=SSL_ENC_NULL_IDX;
-		break;
 	case SSL_AES128:
 		i=SSL_ENC_AES128_IDX;
 		break;
 	case SSL_AES256:
 		i=SSL_ENC_AES256_IDX;
-		break;
-	case SSL_CAMELLIA128:
-		i=SSL_ENC_CAMELLIA128_IDX;
-		break;
-	case SSL_CAMELLIA256:
-		i=SSL_ENC_CAMELLIA256_IDX;
-		break;
-	case SSL_SEED:
-		i=SSL_ENC_SEED_IDX;
-		break;
-	case SSL_AES128GCM:
-		i=SSL_ENC_AES128GCM_IDX;
-		break;
-	case SSL_AES256GCM:
-		i=SSL_ENC_AES256GCM_IDX;
 		break;
 	default:
 		i= -1;
@@ -427,12 +388,7 @@ int ssl_cipher_get_evp(const SSL_SESSION *s, const EVP_CIPHER **enc,
 	if ((i < 0) || (i >= SSL_ENC_NUM_IDX))
 		*enc=NULL;
 	else
-		{
-		if (i == SSL_ENC_NULL_IDX)
-			*enc = EVP_enc_null();
-
 		*enc=ssl_cipher_methods[i];
-		}
 
 	if (!ssl_cipher_get_mac(s, md, mac_pkey_type, mac_secret_size))
 		return 0;
@@ -589,15 +545,8 @@ static void ssl_cipher_get_disabled(unsigned long *mkey, unsigned long *auth, un
 	*enc |= (ssl_cipher_methods[SSL_ENC_DES_IDX ] == NULL) ? SSL_DES :0;
 	*enc |= (ssl_cipher_methods[SSL_ENC_3DES_IDX] == NULL) ? SSL_3DES:0;
 	*enc |= (ssl_cipher_methods[SSL_ENC_RC4_IDX ] == NULL) ? SSL_RC4 :0;
-	*enc |= (ssl_cipher_methods[SSL_ENC_RC2_IDX ] == NULL) ? SSL_RC2 :0;
-	*enc |= (ssl_cipher_methods[SSL_ENC_IDEA_IDX] == NULL) ? SSL_IDEA:0;
 	*enc |= (ssl_cipher_methods[SSL_ENC_AES128_IDX] == NULL) ? SSL_AES128:0;
 	*enc |= (ssl_cipher_methods[SSL_ENC_AES256_IDX] == NULL) ? SSL_AES256:0;
-	*enc |= (ssl_cipher_methods[SSL_ENC_AES128GCM_IDX] == NULL) ? SSL_AES128GCM:0;
-	*enc |= (ssl_cipher_methods[SSL_ENC_AES256GCM_IDX] == NULL) ? SSL_AES256GCM:0;
-	*enc |= (ssl_cipher_methods[SSL_ENC_CAMELLIA128_IDX] == NULL) ? SSL_CAMELLIA128:0;
-	*enc |= (ssl_cipher_methods[SSL_ENC_CAMELLIA256_IDX] == NULL) ? SSL_CAMELLIA256:0;
-	*enc |= (ssl_cipher_methods[SSL_ENC_SEED_IDX] == NULL) ? SSL_SEED:0;
 
 	*mac |= (ssl_digest_methods[SSL_MD_MD5_IDX ] == NULL) ? SSL_MD5 :0;
 	*mac |= (ssl_digest_methods[SSL_MD_SHA1_IDX] == NULL) ? SSL_SHA1:0;
@@ -1245,64 +1194,6 @@ static int ssl_cipher_process_rulestr(const char *rule_str,
 
 	return(retval);
 	}
-#ifndef OPENSSL_NO_EC
-static int check_suiteb_cipher_list(const SSL_METHOD *meth, CERT *c,
-					const char **prule_str)
-	{
-	unsigned int suiteb_flags = 0, suiteb_comb2 = 0;
-	if (!strcmp(*prule_str, "SUITEB128"))
-		suiteb_flags = SSL_CERT_FLAG_SUITEB_128_LOS;
-	else if (!strcmp(*prule_str, "SUITEB128ONLY"))
-		suiteb_flags = SSL_CERT_FLAG_SUITEB_128_LOS_ONLY;
-	else if (!strcmp(*prule_str, "SUITEB128C2"))
-		{
-		suiteb_comb2 = 1;
-		suiteb_flags = SSL_CERT_FLAG_SUITEB_128_LOS;
-		}
-	else if (!strcmp(*prule_str, "SUITEB192"))
-		suiteb_flags = SSL_CERT_FLAG_SUITEB_192_LOS;
-
-	if (suiteb_flags)
-		{
-		c->cert_flags &= ~SSL_CERT_FLAG_SUITEB_128_LOS;
-		c->cert_flags |= suiteb_flags;
-		}
-	else
-		suiteb_flags = c->cert_flags & SSL_CERT_FLAG_SUITEB_128_LOS;
-
-	if (!suiteb_flags)
-		return 1;
-	/* Check version: if TLS 1.2 ciphers allowed we can use Suite B */
-
-	if (!(meth->ssl3_enc->enc_flags & SSL_ENC_FLAG_TLS1_2_CIPHERS))
-		{
-		if (meth->ssl3_enc->enc_flags & SSL_ENC_FLAG_DTLS)
-			OPENSSL_PUT_ERROR(SSL, check_suiteb_cipher_list, SSL_R_ONLY_DTLS_1_2_ALLOWED_IN_SUITEB_MODE);
-		else
-			OPENSSL_PUT_ERROR(SSL, check_suiteb_cipher_list, SSL_R_ONLY_TLS_1_2_ALLOWED_IN_SUITEB_MODE);
-		return 0;
-		}
-
-	switch(suiteb_flags)
-		{
-	case SSL_CERT_FLAG_SUITEB_128_LOS:
-		if (suiteb_comb2)
-			*prule_str = "ECDHE-ECDSA-AES256-GCM-SHA384";
-		else
-			*prule_str = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384";
-		break;
-	case SSL_CERT_FLAG_SUITEB_128_LOS_ONLY:
-		*prule_str = "ECDHE-ECDSA-AES128-GCM-SHA256";
-		break;
-	case SSL_CERT_FLAG_SUITEB_192_LOS:
-		*prule_str = "ECDHE-ECDSA-AES256-GCM-SHA384";
-		break;
-		}
-	/* Set auto ECDH parameter determination */
-	c->ecdh_tmp_auto = 1;
-	return 1;
-	}
-#endif
 
 
 STACK_OF(SSL_CIPHER) *ssl_create_cipher_list(const SSL_METHOD *ssl_method,
@@ -1325,10 +1216,6 @@ STACK_OF(SSL_CIPHER) *ssl_create_cipher_list(const SSL_METHOD *ssl_method,
 	 */
 	if (rule_str == NULL || cipher_list == NULL)
 		return NULL;
-#ifndef OPENSSL_NO_EC
-	if (!check_suiteb_cipher_list(ssl_method, c, &rule_str))
-		return NULL;
-#endif
 
 	/*
 	 * To reduce the work to do we only want to process the compiled
@@ -1741,6 +1628,49 @@ const char *SSL_CIPHER_get_name(const SSL_CIPHER *c)
 		return(c->name);
 	return("(NONE)");
 	}
+
+const char *SSL_CIPHER_get_kx_name(const SSL_CIPHER *cipher) {
+  if (cipher == NULL) {
+    return "";
+  }
+
+  switch (cipher->algorithm_mkey) {
+    case SSL_kRSA:
+      return SSL_TXT_RSA;
+    case SSL_kDHr:
+      return SSL_TXT_DH "_" SSL_TXT_RSA;
+    case SSL_kDHd:
+      return SSL_TXT_DH "_" SSL_TXT_DSS;
+    case SSL_kEDH:
+      switch (cipher->algorithm_auth) {
+        case SSL_aDSS:
+          return "DHE_" SSL_TXT_DSS;
+        case SSL_aRSA:
+          return "DHE_" SSL_TXT_RSA;
+        case SSL_aNULL:
+          return SSL_TXT_DH "_anon";
+        default:
+          return "UNKNOWN";
+      }
+    case SSL_kECDHr:
+      return SSL_TXT_ECDH "_" SSL_TXT_RSA;
+    case SSL_kECDHe:
+      return SSL_TXT_ECDH "_" SSL_TXT_ECDSA;
+    case SSL_kEECDH:
+      switch (cipher->algorithm_auth) {
+        case SSL_aECDSA:
+          return "ECDHE_" SSL_TXT_ECDSA;
+        case SSL_aRSA:
+          return "ECDHE_" SSL_TXT_RSA;
+        case SSL_aNULL:
+          return SSL_TXT_ECDH "_anon";
+        default:
+          return "UNKNOWN";
+      }
+    default:
+      return "UNKNOWN";
+  }
+}
 
 /* number of bits for symmetric cipher */
 int SSL_CIPHER_get_bits(const SSL_CIPHER *c, int *alg_bits)

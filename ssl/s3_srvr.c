@@ -1040,13 +1040,6 @@ int ssl3_get_client_hello(SSL *s)
 				s->version = DTLS1_2_VERSION;
 				s->method = DTLSv1_2_server_method();
 				}
-			else if (tls1_suiteb(s))
-				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_get_client_hello, SSL_R_ONLY_DTLS_1_2_ALLOWED_IN_SUITEB_MODE);
-				s->version = s->client_version;
-				al = SSL_AD_PROTOCOL_VERSION;
-				goto f_err;
-				}
 			else if (s->client_version <= DTLS1_VERSION &&
 				!(s->options & SSL_OP_NO_DTLSv1))
 				{
@@ -2110,36 +2103,6 @@ int ssl3_get_client_key_exchange(SSL *s)
 		 * decryption error. */
 		version_good = premaster_secret[0] ^ (s->client_version>>8);
 		version_good |= premaster_secret[1] ^ (s->client_version&0xff);
-
-		/* The premaster secret must contain the same version number as
-		 * the ClientHello to detect version rollback attacks
-		 * (strangely, the protocol does not offer such protection for
-		 * DH ciphersuites). However, buggy clients exist that send the
-		 * negotiated protocol version instead if the server does not
-		 * support the requested protocol version. If
-		 * SSL_OP_TLS_ROLLBACK_BUG is set, tolerate such clients. */
-		if (s->options & SSL_OP_TLS_ROLLBACK_BUG)
-			{
-			unsigned char workaround_mask = version_good;
-			unsigned char workaround;
-
-			/* workaround_mask will be 0xff if version_good is
-			 * non-zero (i.e. the version match failed). Otherwise
-			 * it'll be 0x00. */
-			workaround_mask |= workaround_mask >> 4;
-			workaround_mask |= workaround_mask >> 2;
-			workaround_mask |= workaround_mask >> 1;
-			workaround_mask = ~((workaround_mask & 1) - 1);
-
-			workaround = premaster_secret[0] ^ (s->version>>8);
-			workaround |= premaster_secret[1] ^ (s->version&0xff);
-
-			/* If workaround_mask is 0xff (i.e. there was a version
-			 * mismatch) then we copy the value of workaround over
-			 * version_good. */
-			version_good = (workaround & workaround_mask) |
-				       (version_good & ~workaround_mask);
-			}
 
 		/* If any bits in version_good are set then they'll poision
 		 * decrypt_good_mask and cause rand_premaster_secret to be
