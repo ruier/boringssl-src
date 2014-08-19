@@ -794,15 +794,6 @@ int ssl3_client_hello(SSL *s)
 			OPENSSL_PUT_ERROR(SSL, ssl3_client_hello, SSL_R_NO_CIPHERS_AVAILABLE);
 			goto err;
 			}
-#ifdef OPENSSL_MAX_TLS1_2_CIPHER_LENGTH
-			/* Some servers hang if client hello > 256 bytes
-			 * as hack workaround chop number of supported ciphers
-			 * to keep it well below this if we use TLS v1.2
-			 */
-			if (TLS1_get_version(s) >= TLS1_2_VERSION
-				&& i > OPENSSL_MAX_TLS1_2_CIPHER_LENGTH)
-				i = OPENSSL_MAX_TLS1_2_CIPHER_LENGTH & ~1;
-#endif
 		s2n(i,p);
 		p+=i;
 
@@ -1189,18 +1180,16 @@ int ssl3_get_server_certificate(SSL *s)
 		goto f_err;
 		}
 	sc->peer_cert_type=i;
-	CRYPTO_add(&x->references,1,CRYPTO_LOCK_X509);
 	/* Why would the following ever happen?
 	 * We just created sc a couple of lines ago. */
 	if (sc->peer_pkeys[i].x509 != NULL)
 		X509_free(sc->peer_pkeys[i].x509);
-	sc->peer_pkeys[i].x509=x;
-	sc->peer_key= &(sc->peer_pkeys[i]);
+	sc->peer_pkeys[i].x509 = X509_up_ref(x);
+	sc->peer_key = &(sc->peer_pkeys[i]);
 
 	if (s->session->peer != NULL)
 		X509_free(s->session->peer);
-	CRYPTO_add(&x->references,1,CRYPTO_LOCK_X509);
-	s->session->peer=x;
+	s->session->peer = X509_up_ref(x);
 
 	s->session->verify_result = s->verify_result;
 
@@ -1886,11 +1875,7 @@ int ssl3_get_new_session_ticket(SSL *s)
 	 */ 
 	EVP_Digest(CBS_data(&ticket), CBS_len(&ticket),
 			s->session->session_id, &s->session->session_id_length,
-#ifndef OPENSSL_NO_SHA256
 							EVP_sha256(), NULL);
-#else
-							EVP_sha1(), NULL);
-#endif
 	ret=1;
 	return(ret);
 f_err:
@@ -2097,6 +2082,13 @@ int ssl3_send_client_key_exchange(SSL *s)
 			RSA *rsa;
 			unsigned char tmp_buf[SSL_MAX_MASTER_KEY_LENGTH];
 
+			if (s->session->sess_cert == NULL)
+				{
+				/* We should always have a server certificate with SSL_kRSA. */
+				OPENSSL_PUT_ERROR(SSL, ssl3_send_client_key_exchange, ERR_R_INTERNAL_ERROR);
+				goto err;
+				}
+
 			if (s->session->sess_cert->peer_rsa_tmp != NULL)
 				rsa=s->session->sess_cert->peer_rsa_tmp;
 			else
@@ -2126,10 +2118,6 @@ int ssl3_send_client_key_exchange(SSL *s)
 				p+=2;
 			n=RSA_public_encrypt(sizeof tmp_buf,
 				tmp_buf,p,rsa,RSA_PKCS1_PADDING);
-#ifdef PKCS1_CHECK
-			if (s->options & SSL_OP_PKCS1_CHECK_1) p[1]++;
-			if (s->options & SSL_OP_PKCS1_CHECK_2) tmp_buf[0]=0x70;
-#endif
 			if (n <= 0)
 				{
 				OPENSSL_PUT_ERROR(SSL, ssl3_send_client_key_exchange, SSL_R_BAD_RSA_ENCRYPT);

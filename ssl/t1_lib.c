@@ -890,14 +890,10 @@ static int tls1_check_cert_param(SSL *s, X509 *x, int set_ee_md)
 		tlsext_sigalg_ecdsa(md)
 
 static unsigned char tls12_sigalgs[] = {
-#ifndef OPENSSL_NO_SHA512
 	tlsext_sigalg(TLSEXT_hash_sha512)
 	tlsext_sigalg(TLSEXT_hash_sha384)
-#endif
-#ifndef OPENSSL_NO_SHA256
 	tlsext_sigalg(TLSEXT_hash_sha256)
 	tlsext_sigalg(TLSEXT_hash_sha224)
-#endif
 #ifndef OPENSSL_NO_SHA
 	tlsext_sigalg(TLSEXT_hash_sha1)
 #endif
@@ -2332,12 +2328,15 @@ static int ssl_scan_serverhello_tlsext(SSL *s, CBS *cbs, int *out_alert)
 				return 0;
 				}
 
-			if (!CBS_stow(&ec_point_format_list,
-					&s->session->tlsext_ecpointformatlist,
-					&s->session->tlsext_ecpointformatlist_length))
+			if (!s->hit)
 				{
-				*out_alert = SSL_AD_INTERNAL_ERROR;
-				return 0;
+				if (!CBS_stow(&ec_point_format_list,
+						&s->session->tlsext_ecpointformatlist,
+						&s->session->tlsext_ecpointformatlist_length))
+					{
+					*out_alert = SSL_AD_INTERNAL_ERROR;
+					return 0;
+					}
 				}
 			}
 #endif /* OPENSSL_NO_EC */
@@ -3022,20 +3021,16 @@ const EVP_MD *tls12_get_hash(unsigned char hash_alg)
 		case TLSEXT_hash_sha1:
 		return EVP_sha1();
 #endif
-#ifndef OPENSSL_NO_SHA256
 		case TLSEXT_hash_sha224:
 		return EVP_sha224();
 
 		case TLSEXT_hash_sha256:
 		return EVP_sha256();
-#endif
-#ifndef OPENSSL_NO_SHA512
 		case TLSEXT_hash_sha384:
 		return EVP_sha384();
 
 		case TLSEXT_hash_sha512:
 		return EVP_sha512();
-#endif
 		default:
 		return NULL;
 

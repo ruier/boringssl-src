@@ -383,6 +383,19 @@ type ProtocolBugs struct {
 	// SkipNewSessionTicket causes the server to skip sending the
 	// NewSessionTicket message despite promising to in ServerHello.
 	SkipNewSessionTicket bool
+
+	// SendV2ClientHello causes the client to send a V2ClientHello
+	// instead of a normal ClientHello.
+	SendV2ClientHello bool
+
+	// SendFallbackSCSV causes the client to include
+	// TLS_FALLBACK_SCSV in the ClientHello.
+	SendFallbackSCSV bool
+
+	// MaxHandshakeRecordLength, if non-zero, is the maximum size of a
+	// handshake record. Handshake messages will be split at the record
+	// layer.
+	MaxHandshakeRecordLength int
 }
 
 func (c *Config) serverInit() {

@@ -177,7 +177,7 @@ static X509 *lookup_cert_match(X509_STORE_CTX *ctx, X509 *x)
 			break;
 		}
 	if (i < sk_X509_num(certs))
-		CRYPTO_add(&xtmp->references,1,CRYPTO_LOCK_X509);
+		X509_up_ref(xtmp);
 	else
 		xtmp = NULL;
 	sk_X509_pop_free(certs, X509_free);
@@ -211,7 +211,7 @@ int X509_verify_cert(X509_STORE_CTX *ctx)
 			OPENSSL_PUT_ERROR(X509, X509_verify_cert, ERR_R_MALLOC_FAILURE);
 			goto end;
 			}
-		CRYPTO_add(&ctx->cert->references,1,CRYPTO_LOCK_X509);
+		X509_up_ref(ctx->cert);
 		ctx->last_untrusted=1;
 		}
 
@@ -494,7 +494,7 @@ static int get_issuer_sk(X509 **issuer, X509_STORE_CTX *ctx, X509 *x)
 	*issuer = find_issuer(ctx, ctx->other_ctx, x);
 	if (*issuer)
 		{
-		CRYPTO_add(&(*issuer)->references,1,CRYPTO_LOCK_X509);
+		X509_up_ref(*issuer);
 		return 1;
 		}
 	else
@@ -508,9 +508,6 @@ static int get_issuer_sk(X509 **issuer, X509_STORE_CTX *ctx, X509 *x)
 
 static int check_chain_extensions(X509_STORE_CTX *ctx)
 {
-#ifdef OPENSSL_NO_CHAIN_VERIFY
-	return 1;
-#else
 	int i, ok=0, must_be_ca, plen = 0;
 	X509 *x;
 	int (*cb)(int xok,X509_STORE_CTX *xctx);
@@ -661,7 +658,6 @@ static int check_chain_extensions(X509_STORE_CTX *ctx)
 	ok = 1;
  end:
 	return ok;
-#endif
 }
 
 static int check_name_constraints(X509_STORE_CTX *ctx)
