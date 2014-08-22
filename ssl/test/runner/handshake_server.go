@@ -113,15 +113,12 @@ func (hs *serverHandshakeState) readClientHello() (isResume bool, err error) {
 		c.sendAlert(alertUnexpectedMessage)
 		return false, unexpectedMessageError(hs.clientHello, msg)
 	}
-	c.vers, ok = config.mutualVersion(hs.clientHello.vers)
-	if !ok {
-		c.sendAlert(alertProtocolVersion)
-		return false, fmt.Errorf("tls: client offered an unsupported, maximum protocol version of %x", hs.clientHello.vers)
-	}
 
 	if c.isDTLS && !config.Bugs.SkipHelloVerifyRequest {
+		// Per RFC 6347, the version field in HelloVerifyRequest SHOULD
+		// be always DTLS 1.0
 		helloVerifyRequest := &helloVerifyRequestMsg{
-			vers:   c.vers,
+			vers:   VersionTLS10,
 			cookie: make([]byte, 32),
 		}
 		if _, err := io.ReadFull(c.config.rand(), helloVerifyRequest.cookie); err != nil {
@@ -142,16 +139,27 @@ func (hs *serverHandshakeState) readClientHello() (isResume bool, err error) {
 		if !bytes.Equal(newClientHello.cookie, helloVerifyRequest.cookie) {
 			return false, errors.New("dtls: invalid cookie")
 		}
-		// Apart from the cookie, client hello must match.
-		hs.clientHello.cookie = newClientHello.cookie
-		if hs.clientHello.equal(newClientHello) {
+
+		// Apart from the cookie, the two ClientHellos must
+		// match. Note that clientHello.equal compares the
+		// serialization, so we make a copy.
+		oldClientHelloCopy := *hs.clientHello
+		oldClientHelloCopy.raw = nil
+		oldClientHelloCopy.cookie = nil
+		newClientHelloCopy := *newClientHello
+		newClientHelloCopy.raw = nil
+		newClientHelloCopy.cookie = nil
+		if !oldClientHelloCopy.equal(&newClientHelloCopy) {
 			return false, errors.New("dtls: retransmitted ClientHello does not match")
 		}
 		hs.clientHello = newClientHello
 	}
 
-	// Do not set c.haveVers until after HelloVerifyRequest; the
-	// retransmitted ClientHello may not have the final version.
+	c.vers, ok = config.mutualVersion(hs.clientHello.vers)
+	if !ok {
+		c.sendAlert(alertProtocolVersion)
+		return false, fmt.Errorf("tls: client offered an unsupported, maximum protocol version of %x", hs.clientHello.vers)
+	}
 	c.haveVers = true
 
 	hs.hello = new(serverHelloMsg)

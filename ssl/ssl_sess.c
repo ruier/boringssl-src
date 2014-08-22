@@ -209,7 +209,7 @@ SSL_SESSION *SSL_SESSION_new(void)
 
 	ss->verify_result = 1; /* avoid 0 (= X509_V_OK) just in case */
 	ss->references=1;
-	ss->timeout=60*5+4; /* 5 minute timeout by default */
+	ss->timeout = SSL_DEFAULT_SESSION_TIMEOUT;
 	ss->time=(unsigned long)time(NULL);
 	ss->prev=NULL;
 	ss->next=NULL;
@@ -282,10 +282,8 @@ int ssl_get_new_session(SSL *s, int session)
 
 	if ((ss=SSL_SESSION_new()) == NULL) return(0);
 
-	/* If the context has a default timeout, use it */
-	if (s->session_ctx->session_timeout == 0)
-		ss->timeout=SSL_get_default_timeout(s);
-	else
+	/* If the context has a default timeout, use it over the default. */
+	if (s->session_ctx->session_timeout != 0)
 		ss->timeout=s->session_ctx->session_timeout;
 
 	if (s->session != NULL)
@@ -319,11 +317,6 @@ int ssl_get_new_session(SSL *s, int session)
 		else if (s->version == TLS1_2_VERSION)
 			{
 			ss->ssl_version=TLS1_2_VERSION;
-			ss->session_id_length=SSL3_SSL_SESSION_ID_LENGTH;
-			}
-		else if (s->version == DTLS1_BAD_VER)
-			{
-			ss->ssl_version=DTLS1_BAD_VER;
 			ss->session_id_length=SSL3_SSL_SESSION_ID_LENGTH;
 			}
 		else if (s->version == DTLS1_VERSION)
@@ -853,7 +846,7 @@ long SSL_CTX_get_timeout(const SSL_CTX *s)
 	}
 
 int SSL_set_session_secret_cb(SSL *s, int (*tls_session_secret_cb)(SSL *s, void *secret, int *secret_len,
-	STACK_OF(SSL_CIPHER) *peer_ciphers, SSL_CIPHER **cipher, void *arg), void *arg)
+	STACK_OF(SSL_CIPHER) *peer_ciphers, const SSL_CIPHER **cipher, void *arg), void *arg)
 	{
 	if (s == NULL) return(0);
 	s->tls_session_secret_cb = tls_session_secret_cb;
@@ -1068,14 +1061,13 @@ int (*SSL_CTX_get_client_cert_cb(SSL_CTX *ctx))(SSL * ssl, X509 ** x509 , EVP_PK
 	}
 
 void SSL_CTX_set_cookie_generate_cb(SSL_CTX *ctx,
-	int (*cb)(SSL *ssl, unsigned char *cookie, unsigned int *cookie_len))
+	int (*cb)(SSL *ssl, uint8_t *cookie, size_t *cookie_len))
 	{
 	ctx->app_gen_cookie_cb=cb;
 	}
 
-/* TODO(davidben): |cookie| should be a const pointer. */
 void SSL_CTX_set_cookie_verify_cb(SSL_CTX *ctx,
-	int (*cb)(SSL *ssl, unsigned char *cookie, unsigned int cookie_len))
+	int (*cb)(SSL *ssl, const uint8_t *cookie, size_t cookie_len))
 	{
 	ctx->app_verify_cookie_cb=cb;
 	}

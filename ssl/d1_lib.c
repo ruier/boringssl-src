@@ -116,13 +116,6 @@ SSL3_ENC_METHOD DTLSv1_2_enc_data={
 	dtls1_handshake_write	
 	};
 
-long dtls1_default_timeout(void)
-	{
-	/* 2 hours, the 24 hours mentioned in the DTLSv1 spec
-	 * is way too long for http, the cache would over fill */
-	return(60*60*2);
-	}
-
 int dtls1_new(SSL *s)
 	{
 	DTLS1_STATE *d1;
@@ -278,9 +271,7 @@ void dtls1_clear(SSL *s)
 		}
 
 	ssl3_clear(s);
-	if (s->options & SSL_OP_CISCO_ANYCONNECT)
-		s->version=DTLS1_BAD_VER;
-	else if (s->method->version == DTLS_ANY_VERSION)
+	if (s->method->version == DTLS_ANY_VERSION)
 		s->version=DTLS1_2_VERSION;
 	else
 		s->version=s->method->version;

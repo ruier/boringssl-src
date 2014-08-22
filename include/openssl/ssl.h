@@ -188,42 +188,21 @@ extern "C" {
 
 /* These are used to specify which ciphers to use and not to use */
 
-#define SSL_TXT_EXP40		"EXPORT40"
-#define SSL_TXT_EXP56		"EXPORT56"
-#define SSL_TXT_LOW		"LOW"
 #define SSL_TXT_MEDIUM		"MEDIUM"
 #define SSL_TXT_HIGH		"HIGH"
 #define SSL_TXT_FIPS		"FIPS"
 
-#define SSL_TXT_kFZA		"kFZA" /* unused! */
-#define	SSL_TXT_aFZA		"aFZA" /* unused! */
-#define SSL_TXT_eFZA		"eFZA" /* unused! */
-#define SSL_TXT_FZA		"FZA"  /* unused! */
-
 #define	SSL_TXT_aNULL		"aNULL"
-#define	SSL_TXT_eNULL		"eNULL"
-#define	SSL_TXT_NULL		"NULL"
 
 #define SSL_TXT_kRSA		"kRSA"
-#define SSL_TXT_kDHr		"kDHr" 
-#define SSL_TXT_kDHd		"kDHd"
-#define SSL_TXT_kDH 		"kDH"
 #define SSL_TXT_kEDH		"kEDH"
-#define SSL_TXT_kECDHr		"kECDHr"
-#define SSL_TXT_kECDHe		"kECDHe"
-#define SSL_TXT_kECDH		"kECDH"
 #define SSL_TXT_kEECDH		"kEECDH"
 #define SSL_TXT_kPSK            "kPSK"
-#define SSL_TXT_kSRP		"kSRP"
 
 #define	SSL_TXT_aRSA		"aRSA"
-#define	SSL_TXT_aDSS		"aDSS"
-#define	SSL_TXT_aDH		"aDH"
-#define	SSL_TXT_aECDH		"aECDH"
 #define SSL_TXT_aECDSA		"aECDSA"
 #define SSL_TXT_aPSK            "aPSK"
 
-#define	SSL_TXT_DSS		"DSS"
 #define SSL_TXT_DH		"DH"
 #define SSL_TXT_EDH		"EDH" /* same as "kEDH:-ADH" */
 #define SSL_TXT_ADH		"ADH"
@@ -233,21 +212,13 @@ extern "C" {
 #define SSL_TXT_AECDH		"AECDH"
 #define SSL_TXT_ECDSA		"ECDSA"
 #define SSL_TXT_PSK             "PSK"
-#define SSL_TXT_SRP		"SRP"
 
-#define SSL_TXT_DES		"DES"
 #define SSL_TXT_3DES		"3DES"
 #define SSL_TXT_RC4		"RC4"
-#define SSL_TXT_RC2		"RC2"
-#define SSL_TXT_IDEA		"IDEA"
-#define SSL_TXT_SEED		"SEED"
 #define SSL_TXT_AES128		"AES128"
 #define SSL_TXT_AES256		"AES256"
 #define SSL_TXT_AES		"AES"
 #define SSL_TXT_AES_GCM		"AESGCM"
-#define SSL_TXT_CAMELLIA128	"CAMELLIA128"
-#define SSL_TXT_CAMELLIA256	"CAMELLIA256"
-#define SSL_TXT_CAMELLIA	"CAMELLIA"
 #define SSL_TXT_CHACHA20	"CHACHA20"
 
 #define SSL_TXT_MD5		"MD5"
@@ -256,14 +227,10 @@ extern "C" {
 #define SSL_TXT_SHA256		"SHA256"
 #define SSL_TXT_SHA384		"SHA384"
 
-#define SSL_TXT_SSLV2		"SSLv2"
 #define SSL_TXT_SSLV3		"SSLv3"
 #define SSL_TXT_TLSV1		"TLSv1"
 #define SSL_TXT_TLSV1_1		"TLSv1.1"
 #define SSL_TXT_TLSV1_2		"TLSv1.2"
-
-#define SSL_TXT_EXP		"EXP"
-#define SSL_TXT_EXPORT		"EXPORT"
 
 #define SSL_TXT_ALL		"ALL"
 
@@ -281,7 +248,6 @@ extern "C" {
  * DEFAULT gets, as only selection is being done and no sorting as needed
  * for DEFAULT.
  */
-#define SSL_TXT_CMPALL		"COMPLEMENTOFALL"
 #define SSL_TXT_CMPDEF		"COMPLEMENTOFDEFAULT"
 
 /* The following cipher list is used by default.
@@ -333,7 +299,7 @@ typedef struct srtp_protection_profile_st
 DECLARE_STACK_OF(SRTP_PROTECTION_PROFILE)
 
 typedef int (*tls_session_ticket_ext_cb_fn)(SSL *s, const unsigned char *data, int len, void *arg);
-typedef int (*tls_session_secret_cb_fn)(SSL *s, void *secret, int *secret_len, STACK_OF(SSL_CIPHER) *peer_ciphers, SSL_CIPHER **cipher, void *arg);
+typedef int (*tls_session_secret_cb_fn)(SSL *s, void *secret, int *secret_len, STACK_OF(SSL_CIPHER) *peer_ciphers, const SSL_CIPHER **cipher, void *arg);
 
 #ifndef OPENSSL_NO_SSL_INTERN
 
@@ -387,7 +353,6 @@ struct ssl_method_st
 	int (*num_ciphers)(void);
 	const SSL_CIPHER *(*get_cipher)(unsigned ncipher);
 	const struct ssl_method_st *(*get_ssl_method)(int version);
-	long (*get_timeout)(void);
 	struct ssl3_enc_method *ssl3_enc; /* Extra SSLv3/TLS stuff */
 	int (*ssl_version)(void);
 	long (*ssl_callback_ctrl)(SSL *s, int cb_id, void (*fp)(void));
@@ -531,8 +496,6 @@ struct ssl_session_st
 #define SSL_OP_COOKIE_EXCHANGE              0x00002000L
 /* Don't use RFC4507 ticket extension */
 #define SSL_OP_NO_TICKET	            0x00004000L
-/* Use Cisco's "speshul" version of DTLS_BAD_VER (as client)  */
-#define SSL_OP_CISCO_ANYCONNECT		    0x00008000L
 
 /* As server, disallow session resumption on renegotiation */
 #define SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION	0x00010000L
@@ -725,6 +688,8 @@ typedef struct ssl_aead_ctx_st SSL_AEAD_CTX;
 
 #define SSL_SESSION_CACHE_MAX_SIZE_DEFAULT	(1024*20)
 
+#define SSL_DEFAULT_SESSION_TIMEOUT (2 * 60 * 60)
+
 /* This callback type is used inside SSL_CTX, SSL, and in the functions that set
  * them. It is used to override the generation of SSL/TLS session IDs in a
  * server. Return value should be zero on an error, non-zero to proceed. Also,
@@ -902,19 +867,13 @@ struct ssl_ctx_st
 	/* get channel id callback */
 	void (*channel_id_cb)(SSL *ssl, EVP_PKEY **pkey);
 
-    /* cookie generate callback */
-    int (*app_gen_cookie_cb)(SSL *ssl, unsigned char *cookie, 
-        unsigned int *cookie_len);
+	/* cookie generate callback */
+	int (*app_gen_cookie_cb)(SSL *ssl, uint8_t *cookie, size_t *cookie_len);
 
-    /* verify cookie callback */
-    int (*app_verify_cookie_cb)(SSL *ssl, unsigned char *cookie, 
-        unsigned int cookie_len);
+	/* verify cookie callback */
+	int (*app_verify_cookie_cb)(SSL *ssl, const uint8_t *cookie, size_t cookie_len);
 
 	CRYPTO_EX_DATA ex_data;
-
-	const EVP_MD *rsa_md5;/* For SSLv2 - name is 'ssl2-md5' */
-	const EVP_MD *md5;	/* For SSLv3/TLSv1 'ssl3-md5' */
-	const EVP_MD *sha1;   /* For SSLv3/TLSv1 'ssl3->sha1' */
 
 	STACK_OF(X509) *extra_certs;
 
@@ -969,12 +928,6 @@ struct ssl_ctx_st
 	 * padding and MAC overheads.
 	 */
 	unsigned int max_send_fragment;
-
-#ifndef OPENSSL_ENGINE
-	/* Engine to pass requests for client certs to
-	 */
-	ENGINE *client_cert_engine;
-#endif
 
 	/* TLS extensions servername callback */
 	int (*tlsext_servername_callback)(SSL*, int *, void *);
@@ -1132,11 +1085,8 @@ OPENSSL_EXPORT void SSL_CTX_set_client_cert_cb(SSL_CTX *ctx, int (*client_cert_c
 OPENSSL_EXPORT int (*SSL_CTX_get_client_cert_cb(SSL_CTX *ctx))(SSL *ssl, X509 **x509, EVP_PKEY **pkey);
 OPENSSL_EXPORT void SSL_CTX_set_channel_id_cb(SSL_CTX *ctx, void (*channel_id_cb)(SSL *ssl, EVP_PKEY **pkey));
 OPENSSL_EXPORT void (*SSL_CTX_get_channel_id_cb(SSL_CTX *ctx))(SSL *ssl, EVP_PKEY **pkey);
-#ifndef OPENSSL_NO_ENGINE
-OPENSSL_EXPORT int SSL_CTX_set_client_cert_engine(SSL_CTX *ctx, ENGINE *e);
-#endif
-OPENSSL_EXPORT void SSL_CTX_set_cookie_generate_cb(SSL_CTX *ctx, int (*app_gen_cookie_cb)(SSL *ssl, unsigned char *cookie, unsigned int *cookie_len));
-OPENSSL_EXPORT void SSL_CTX_set_cookie_verify_cb(SSL_CTX *ctx, int (*app_verify_cookie_cb)(SSL *ssl, unsigned char *cookie, unsigned int cookie_len));
+OPENSSL_EXPORT void SSL_CTX_set_cookie_generate_cb(SSL_CTX *ctx, int (*app_gen_cookie_cb)(SSL *ssl, uint8_t *cookie, size_t *cookie_len));
+OPENSSL_EXPORT void SSL_CTX_set_cookie_verify_cb(SSL_CTX *ctx, int (*app_verify_cookie_cb)(SSL *ssl, const uint8_t *cookie, size_t cookie_len));
 #ifndef OPENSSL_NO_NEXTPROTONEG
 OPENSSL_EXPORT void SSL_CTX_set_next_protos_advertised_cb(SSL_CTX *s,
 					   int (*cb) (SSL *ssl,
@@ -1343,9 +1293,6 @@ struct ssl_st
 
 	void (*info_callback)(const SSL *ssl,int type,int val); /* optional informational callback */
 
-	int error;		/* error bytes to be written */
-	int error_code;		/* actual code */
-
 	/* PSK identity hint is stored here only to enable setting a hint on an SSL object before an
 	 * SSL_SESSION is associated with it. Once an SSL_SESSION is associated with this SSL object,
 	 * the psk_identity_hint from the session takes precedence over this one. */
@@ -1521,7 +1468,7 @@ extern "C" {
 #define SSL_in_before(a)		(SSL_state(a)&SSL_ST_BEFORE)
 #define SSL_in_connect_init(a)		(SSL_state(a)&SSL_ST_CONNECT)
 #define SSL_in_accept_init(a)		(SSL_state(a)&SSL_ST_ACCEPT)
-int SSL_cutthrough_complete(const SSL *s);
+OPENSSL_EXPORT int SSL_cutthrough_complete(const SSL *s);
 
 /* The following 2 states are kept in ssl->rstate when reads fail,
  * you should not need these */

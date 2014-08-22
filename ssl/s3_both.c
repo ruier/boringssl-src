@@ -498,27 +498,12 @@ int ssl_cert_type(X509 *x, EVP_PKEY *pkey)
 		{
 		ret=SSL_PKEY_RSA_ENC;
 		}
-	else if (i == EVP_PKEY_DSA)
-		{
-		ret=SSL_PKEY_DSA_SIGN;
-		}
 #ifndef OPENSSL_NO_EC
 	else if (i == EVP_PKEY_EC)
 		{
 		ret = SSL_PKEY_ECC;
 		}	
 #endif
-	else if (x && (i == EVP_PKEY_DH || i == EVP_PKEY_DHX))
-		{
-		/* For DH two cases: DH certificate signed with RSA and
-		 * DH certificate signed with DSA.
-		 */
-		i = X509_certificate_type(x, pk);
-		if (i & EVP_PKS_RSA)
-			ret = SSL_PKEY_DH_RSA;
-		else if (i & EVP_PKS_DSA)
-			ret = SSL_PKEY_DH_DSA;
-		}
 		
 err:
 	if(!pkey) EVP_PKEY_free(pk);
@@ -628,7 +613,7 @@ int ssl3_setup_write_buffer(SSL *s)
 	unsigned char *p;
 	size_t len,align=0,headerlen;
 
-	if (SSL_version(s) == DTLS1_VERSION || SSL_version(s) == DTLS1_BAD_VER)
+	if (SSL_IS_DTLS(s))
 		headerlen = DTLS1_RT_HEADER_LENGTH + 1;
 	else
 		headerlen = SSL3_RT_HEADER_LENGTH;

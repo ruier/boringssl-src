@@ -327,8 +327,7 @@ int dtls1_accept(SSL *s)
 			s->s3->tmp.next_state=SSL3_ST_SR_CLNT_HELLO_A;
 
 			/* HelloVerifyRequest resets Finished MAC */
-			if (s->version != DTLS1_BAD_VER)
-				ssl3_init_finished_mac(s);
+			ssl3_init_finished_mac(s);
 			break;
 			
 
@@ -470,48 +469,28 @@ int dtls1_accept(SSL *s)
 
 		case SSL3_ST_SR_CERT_A:
 		case SSL3_ST_SR_CERT_B:
-			/* Check for second client hello (MS SGC) */
-			ret = ssl3_check_client_hello(s);
-			if (ret <= 0)
-				goto end;
-			if (ret == 2)
+			if (s->s3->tmp.cert_request)
 				{
-				dtls1_stop_timer(s);
-				s->state = SSL3_ST_SR_CLNT_HELLO_C;
+				ret=ssl3_get_client_certificate(s);
+				if (ret <= 0) goto end;
 				}
-			else {
-				if (s->s3->tmp.cert_request)
-					{
-					ret=ssl3_get_client_certificate(s);
-					if (ret <= 0) goto end;
-					}
-				s->init_num=0;
-				s->state=SSL3_ST_SR_KEY_EXCH_A;
-			}
+			s->init_num=0;
+			s->state=SSL3_ST_SR_KEY_EXCH_A;
 			break;
 
 		case SSL3_ST_SR_KEY_EXCH_A:
 		case SSL3_ST_SR_KEY_EXCH_B:
 			ret=ssl3_get_client_key_exchange(s);
-			if (ret <= 0) goto end;
-
+			if (ret <= 0)
+				goto end;
 			s->state=SSL3_ST_SR_CERT_VRFY_A;
 			s->init_num=0;
 
-			if (ret == 2)
+			/* TODO(davidben): These two blocks are different
+			 * between SSL and DTLS. Resolve the difference and code
+			 * duplication. */
+			if (SSL_USE_SIGALGS(s))
 				{
-				/* For the ECDH ciphersuites when
-				 * the client sends its ECDH pub key in
-				 * a certificate, the CertificateVerify
-				 * message is not sent.
-				 */
-				s->state=SSL3_ST_SR_FINISHED_A;
-				s->init_num = 0;
-				}
-			else if (SSL_USE_SIGALGS(s))
-				{
-				s->state=SSL3_ST_SR_CERT_VRFY_A;
-				s->init_num=0;
 				if (!s->session->peer)
 					break;
 				/* For sigalgs freeze the handshake buffer
@@ -528,9 +507,6 @@ int dtls1_accept(SSL *s)
 				}
 			else
 				{
-				s->state=SSL3_ST_SR_CERT_VRFY_A;
-				s->init_num=0;
-
 				/* We need to get hashes here so if there is
 				 * a client cert, it can be verified */ 
 				s->method->ssl3_enc->cert_verify_mac(s,
@@ -719,8 +695,7 @@ int dtls1_send_hello_verify_request(SSL *s)
 		*(p++) = DTLS1_VERSION & 0xFF;
 
 		if (s->ctx->app_gen_cookie_cb == NULL ||
-		     s->ctx->app_gen_cookie_cb(s, s->d1->cookie,
-			 &(s->d1->cookie_len)) == 0)
+		     s->ctx->app_gen_cookie_cb(s, s->d1->cookie, &(s->d1->cookie_len)) == 0)
 			{
 			OPENSSL_PUT_ERROR(SSL, dtls1_send_hello_verify_request, ERR_R_INTERNAL_ERROR);
 			return 0;

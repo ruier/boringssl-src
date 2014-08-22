@@ -68,7 +68,6 @@ extern "C" {
 
 
 #define DTLS1_VERSION			0xFEFF
-#define DTLS1_BAD_VER			0x0100
 #define DTLS1_2_VERSION			0xFEFD
 /* Special value for method supporting multiple versions */
 #define DTLS_ANY_VERSION		0x1FFFF
@@ -172,9 +171,12 @@ typedef struct hm_fragment_st
 
 typedef struct dtls1_state_st
 	{
+	/* send_cookie is true if we are resending the ClientHello
+	 * with a cookie from a HelloVerifyRequest. */
 	unsigned int send_cookie;
-	unsigned char cookie[DTLS1_COOKIE_LENGTH];
-	unsigned int cookie_len;
+
+	uint8_t cookie[DTLS1_COOKIE_LENGTH];
+	size_t cookie_len;
 
 	/* 
 	 * The current data and handshake epoch.  This is initially

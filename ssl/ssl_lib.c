@@ -187,7 +187,6 @@ int SSL_clear(SSL *s)
 		s->session=NULL;
 		}
 
-	s->error=0;
 	s->hit=0;
 	s->shutdown=0;
 
@@ -1033,7 +1032,7 @@ int SSL_connect(SSL *s)
 
 long SSL_get_default_timeout(const SSL *s)
 	{
-	return(s->method->get_timeout());
+	return SSL_DEFAULT_SESSION_TIMEOUT;
 	}
 
 int SSL_read(SSL *s,void *buf,int num)
@@ -1398,7 +1397,7 @@ STACK_OF(SSL_CIPHER) *ssl_get_ciphers_by_id(SSL *s)
 /** The old interface to get the same thing as SSL_get_ciphers() */
 const char *SSL_get_cipher_list(const SSL *s,int n)
 	{
-	SSL_CIPHER *c;
+	const SSL_CIPHER *c;
 	STACK_OF(SSL_CIPHER) *sk;
 
 	if (s == NULL) return(NULL);
@@ -1472,7 +1471,7 @@ char *SSL_get_shared_ciphers(const SSL *s,char *buf,int len)
 	{
 	char *p;
 	STACK_OF(SSL_CIPHER) *sk;
-	SSL_CIPHER *c;
+	const SSL_CIPHER *c;
 	int i;
 
 	if ((s->session == NULL) || (s->session->ciphers == NULL) ||
@@ -1510,7 +1509,7 @@ char *SSL_get_shared_ciphers(const SSL *s,char *buf,int len)
 int ssl_cipher_list_to_bytes(SSL *s,STACK_OF(SSL_CIPHER) *sk,unsigned char *p)
 	{
 	int i;
-	SSL_CIPHER *c;
+	const SSL_CIPHER *c;
 	CERT *ct = s->cert;
 	unsigned char *q;
 	int no_scsv = s->renegotiate;
@@ -1546,7 +1545,7 @@ int ssl_cipher_list_to_bytes(SSL *s,STACK_OF(SSL_CIPHER) *sk,unsigned char *p)
 		{
 		if (!no_scsv)
 			{
-			static SSL_CIPHER scsv =
+			static const SSL_CIPHER scsv =
 				{
 				0, NULL, SSL3_CK_SCSV, 0, 0, 0, 0, 0, 0, 0, 0, 0
 				};
@@ -1557,7 +1556,7 @@ int ssl_cipher_list_to_bytes(SSL *s,STACK_OF(SSL_CIPHER) *sk,unsigned char *p)
 			}
 		if (s->fallback_scsv)
 			{
-			static SSL_CIPHER fallback_scsv =
+			static const SSL_CIPHER fallback_scsv =
 				{
 				0, NULL, SSL3_CK_FALLBACK_SCSV, 0, 0, 0, 0, 0, 0, 0, 0, 0
 				};
@@ -1929,7 +1928,7 @@ SSL_CTX *SSL_CTX_new(const SSL_METHOD *meth)
 	ret->session_cache_tail=NULL;
 
 	/* We take the system default */
-	ret->session_timeout=meth->get_timeout();
+	ret->session_timeout = SSL_DEFAULT_SESSION_TIMEOUT;
 
 	ret->new_session_cb=0;
 	ret->remove_session_cb=0;
@@ -1984,10 +1983,6 @@ SSL_CTX *SSL_CTX_new(const SSL_METHOD *meth)
 	if (!ret->param)
 		goto err;
 
-	ret->rsa_md5 = EVP_md5();
-	ret->md5 = EVP_md5();
-	ret->sha1 = EVP_sha1();
-
 	if ((ret->client_CA=sk_X509_NAME_new_null()) == NULL)
 		goto err;
 
@@ -2015,26 +2010,7 @@ SSL_CTX *SSL_CTX_new(const SSL_METHOD *meth)
 	ret->psk_identity_hint=NULL;
 	ret->psk_client_callback=NULL;
 	ret->psk_server_callback=NULL;
-#ifndef OPENSSL_NO_ENGINE
-	ret->client_cert_engine = NULL;
-#ifdef OPENSSL_SSL_CLIENT_ENGINE_AUTO
-#define eng_strx(x)	#x
-#define eng_str(x)	eng_strx(x)
-	/* Use specific client engine automatically... ignore errors */
-	{
-	ENGINE *eng;
-	eng = ENGINE_by_id(eng_str(OPENSSL_SSL_CLIENT_ENGINE_AUTO));
-	if (!eng)
-		{
-		ERR_clear_error();
-		ENGINE_load_builtin_engines();
-		eng = ENGINE_by_id(eng_str(OPENSSL_SSL_CLIENT_ENGINE_AUTO));
-		}
-	if (!eng || !SSL_CTX_set_client_cert_engine(ret, eng))
-		ERR_clear_error();
-	}
-#endif
-#endif
+
 	/* Default is to connect to non-RI servers. When RI is more widely
 	 * deployed might change this.
 	 */
@@ -2109,14 +2085,6 @@ void SSL_CTX_free(SSL_CTX *a)
 	if (a->psk_identity_hint)
 		OPENSSL_free(a->psk_identity_hint);
 
-	/* TODO(fork): remove. */
-#if 0
-#ifndef OPENSSL_NO_ENGINE
-	if (a->client_cert_engine)
-		ENGINE_finish(a->client_cert_engine);
-#endif
-#endif
-
 # ifndef OPENSSL_NO_EC
 	if (a->tlsext_ecpointformatlist)
 		OPENSSL_free(a->tlsext_ecpointformatlist);
@@ -2172,18 +2140,16 @@ void SSL_set_cert_cb(SSL *s, int (*cb)(SSL *ssl, void *arg), void *arg)
 void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 	{
 	CERT_PKEY *cpk;
-	int rsa_enc,rsa_sign,dh_tmp,dh_rsa,dh_dsa,dsa_sign;
+	int rsa_enc,rsa_sign,dh_tmp;
 	unsigned long mask_k,mask_a;
 #ifndef OPENSSL_NO_ECDSA
 	int have_ecc_cert, ecdsa_ok;
 #endif
 #ifndef OPENSSL_NO_ECDH
-	int have_ecdh_tmp, ecdh_ok;
+	int have_ecdh_tmp;
 #endif
 #ifndef OPENSSL_NO_EC
 	X509 *x = NULL;
-	EVP_PKEY *ecc_pkey = NULL;
-	int signature_nid = 0, pk_nid = 0, md_nid = 0;
 #endif
 	if (c == NULL) return;
 
@@ -2200,13 +2166,6 @@ void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 	rsa_enc= cpk->valid_flags & CERT_PKEY_VALID;
 	cpk= &(c->pkeys[SSL_PKEY_RSA_SIGN]);
 	rsa_sign= cpk->valid_flags & CERT_PKEY_SIGN;
-	cpk= &(c->pkeys[SSL_PKEY_DSA_SIGN]);
-	dsa_sign= cpk->valid_flags & CERT_PKEY_SIGN;
-	cpk= &(c->pkeys[SSL_PKEY_DH_RSA]);
-	dh_rsa=  cpk->valid_flags & CERT_PKEY_VALID;
-	cpk= &(c->pkeys[SSL_PKEY_DH_DSA]);
-/* FIX THIS EAY EAY EAY */
-	dh_dsa=  cpk->valid_flags & CERT_PKEY_VALID;
 	cpk= &(c->pkeys[SSL_PKEY_ECC]);
 #ifndef OPENSSL_NO_EC
 	have_ecc_cert= cpk->valid_flags & CERT_PKEY_VALID;
@@ -2223,38 +2182,18 @@ void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 	if (rsa_enc)
 		mask_k|=SSL_kRSA;
 
-#if 0
-	/* The match needs to be both kEDH and aRSA or aDSA, so don't worry */
-	if (	(dh_tmp || dh_rsa || dh_dsa) &&
-		(rsa_enc || rsa_sign || dsa_sign))
-		mask_k|=SSL_kEDH;
-#endif
-
 	if (dh_tmp)
 		mask_k|=SSL_kEDH;
-
-	if (dh_rsa) mask_k|=SSL_kDHr;
-
-	if (dh_dsa) mask_k|=SSL_kDHd;
-
-	if (mask_k & (SSL_kDHr|SSL_kDHd))
-		mask_a |= SSL_aDH;
 
 	if (rsa_enc || rsa_sign)
 		{
 		mask_a|=SSL_aRSA;
 		}
 
-	if (dsa_sign)
-		{
-		mask_a|=SSL_aDSS;
-		}
-
 	mask_a|=SSL_aNULL;
 
-	/* An ECC certificate may be usable for ECDH and/or
-	 * ECDSA cipher suites depending on the key usage extension.
-	 */
+	/* An ECC certificate may be usable for ECDSA cipher suites depending on
+         * the key usage extension. */
 #ifndef OPENSSL_NO_EC
 	if (have_ecc_cert)
 		{
@@ -2262,36 +2201,10 @@ void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 		x = cpk->x509;
 		/* This call populates extension flags (ex_flags) */
 		X509_check_purpose(x, -1, 0);
-		ecdh_ok = (x->ex_flags & EXFLAG_KUSAGE) ?
-		    (x->ex_kusage & X509v3_KU_KEY_AGREEMENT) : 1;
 		ecdsa_ok = (x->ex_flags & EXFLAG_KUSAGE) ?
 		    (x->ex_kusage & X509v3_KU_DIGITAL_SIGNATURE) : 1;
 		if (!(cpk->valid_flags & CERT_PKEY_SIGN))
 			ecdsa_ok = 0;
-		ecc_pkey = X509_get_pubkey(x);
-		EVP_PKEY_free(ecc_pkey);
-		if ((x->sig_alg) && (x->sig_alg->algorithm))
-			{
-			signature_nid = OBJ_obj2nid(x->sig_alg->algorithm);
-			OBJ_find_sigid_algs(signature_nid, &md_nid, &pk_nid);
-			}
-#ifndef OPENSSL_NO_ECDH
-		if (ecdh_ok)
-			{
-
-			if (pk_nid == NID_rsaEncryption || pk_nid == NID_rsa)
-				{
-				mask_k|=SSL_kECDHr;
-				mask_a|=SSL_aECDH;
-				}
-
-			if (pk_nid == NID_X9_62_id_ecPublicKey)
-				{
-				mask_k|=SSL_kECDHe;
-				mask_a|=SSL_aECDH;
-				}
-			}
-#endif
 #ifndef OPENSSL_NO_ECDSA
 		if (ecdsa_ok)
 			{
@@ -2324,11 +2237,10 @@ void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 
 int ssl_check_srvr_ecc_cert_and_alg(X509 *x, SSL *s)
 	{
-	unsigned long alg_k, alg_a;
+	unsigned long alg_a;
 	int signature_nid = 0, md_nid = 0, pk_nid = 0;
 	const SSL_CIPHER *cs = s->s3->tmp.new_cipher;
 
-	alg_k = cs->algorithm_mkey;
 	alg_a = cs->algorithm_auth;
 
 	/* This call populates the ex_flags field correctly */
@@ -2337,34 +2249,6 @@ int ssl_check_srvr_ecc_cert_and_alg(X509 *x, SSL *s)
 		{
 		signature_nid = OBJ_obj2nid(x->sig_alg->algorithm);
 		OBJ_find_sigid_algs(signature_nid, &md_nid, &pk_nid);
-		}
-	if (alg_k & SSL_kECDHe || alg_k & SSL_kECDHr)
-		{
-		/* key usage, if present, must allow key agreement */
-		if (ku_reject(x, X509v3_KU_KEY_AGREEMENT))
-			{
-			OPENSSL_PUT_ERROR(SSL, ssl_check_srvr_ecc_cert_and_alg, SSL_R_ECC_CERT_NOT_FOR_KEY_AGREEMENT);
-			return 0;
-			}
-		if ((alg_k & SSL_kECDHe) && TLS1_get_version(s) < TLS1_2_VERSION)
-			{
-			/* signature alg must be ECDSA */
-			if (pk_nid != NID_X9_62_id_ecPublicKey)
-				{
-				OPENSSL_PUT_ERROR(SSL, ssl_check_srvr_ecc_cert_and_alg, SSL_R_ECC_CERT_SHOULD_HAVE_SHA1_SIGNATURE);
-				return 0;
-				}
-			}
-		if ((alg_k & SSL_kECDHr) && TLS1_get_version(s) < TLS1_2_VERSION)
-			{
-			/* signature alg must be RSA */
-
-			if (pk_nid != NID_rsaEncryption && pk_nid != NID_rsa)
-				{
-				OPENSSL_PUT_ERROR(SSL, ssl_check_srvr_ecc_cert_and_alg, SSL_R_ECC_CERT_SHOULD_HAVE_RSA_SIGNATURE);
-				return 0;
-				}
-			}
 		}
 	if (alg_a & SSL_aECDSA)
 		{
@@ -2436,10 +2320,7 @@ EVP_PKEY *ssl_get_sign_pkey(SSL *s,const SSL_CIPHER *cipher, const EVP_MD **pmd)
 	else
 #endif
 
-	if ((alg_a & SSL_aDSS) &&
-		(c->pkeys[SSL_PKEY_DSA_SIGN].privatekey != NULL))
-		idx = SSL_PKEY_DSA_SIGN;
-	else if (alg_a & SSL_aRSA)
+	if (alg_a & SSL_aRSA)
 		{
 		if (c->pkeys[SSL_PKEY_RSA_SIGN].privatekey != NULL)
 			idx = SSL_PKEY_RSA_SIGN;

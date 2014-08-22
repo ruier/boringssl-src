@@ -341,22 +341,10 @@ typedef struct ssl3_buffer_st
 #define SSL3_FLAGS_NO_RENEGOTIATE_CIPHERS	0x0001
 #define SSL3_FLAGS_POP_BUFFER			0x0004
 #define TLS1_FLAGS_TLS_PADDING_BUG		0x0008
-#define TLS1_FLAGS_SKIP_CERT_VERIFY		0x0010
 #define TLS1_FLAGS_KEEP_HANDSHAKE		0x0020
 /* TODO(davidben): This flag can probably be merged into s3->change_cipher_spec
  * to something tri-state. (Normal / Expect CCS / Between CCS and Finished). */
 #define SSL3_FLAGS_EXPECT_CCS			0x0080
- 
-/* SSL3_FLAGS_SGC_RESTART_DONE is set when we
- * restart a handshake because of MS SGC and so prevents us
- * from restarting the handshake in a loop. It's reset on a
- * renegotiation, so effectively limits the client to one restart
- * per negotiation. This limits the possibility of a DDoS
- * attack where the client handshakes in a loop using SGC to
- * restart. Servers which permit renegotiation can still be
- * effected, but we can't prevent that.
- */
-#define SSL3_FLAGS_SGC_RESTART_DONE		0x0040
 
 #ifndef OPENSSL_NO_SSL_INTERN
 

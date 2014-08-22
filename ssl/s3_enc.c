@@ -144,7 +144,7 @@
 
 #include "ssl_locl.h"
 
-static unsigned char ssl3_pad_1[48]={
+static const uint8_t ssl3_pad_1[48]={
 	0x36,0x36,0x36,0x36,0x36,0x36,0x36,0x36,
 	0x36,0x36,0x36,0x36,0x36,0x36,0x36,0x36,
 	0x36,0x36,0x36,0x36,0x36,0x36,0x36,0x36,
@@ -152,7 +152,7 @@ static unsigned char ssl3_pad_1[48]={
 	0x36,0x36,0x36,0x36,0x36,0x36,0x36,0x36,
 	0x36,0x36,0x36,0x36,0x36,0x36,0x36,0x36 };
 
-static unsigned char ssl3_pad_2[48]={
+static const uint8_t ssl3_pad_2[48]={
 	0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,
 	0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,
 	0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,
@@ -369,9 +369,6 @@ int ssl3_setup_key_block(SSL *s)
 
 		if (s->session->cipher != NULL)
 			{
-			if (s->session->cipher->algorithm_enc == SSL_eNULL)
-				s->s3->need_record_splitting = 0;
-
 #ifndef OPENSSL_NO_RC4
 			if (s->session->cipher->algorithm_enc == SSL_RC4)
 				s->s3->need_record_splitting = 0;
@@ -767,7 +764,7 @@ int ssl3_generate_master_secret(SSL *s, unsigned char *out, unsigned char *p,
 	EVP_MD_CTX_init(&ctx);
 	for (i=0; i<3; i++)
 		{
-		EVP_DigestInit_ex(&ctx,s->ctx->sha1, NULL);
+		EVP_DigestInit_ex(&ctx, EVP_sha1(), NULL);
 		EVP_DigestUpdate(&ctx,salt[i],strlen((const char *)salt[i]));
 		EVP_DigestUpdate(&ctx,p,len);
 		EVP_DigestUpdate(&ctx,&(s->s3->client_random[0]),
@@ -776,7 +773,7 @@ int ssl3_generate_master_secret(SSL *s, unsigned char *out, unsigned char *p,
 			SSL3_RANDOM_SIZE);
 		EVP_DigestFinal_ex(&ctx,buf,&n);
 
-		EVP_DigestInit_ex(&ctx,s->ctx->md5, NULL);
+		EVP_DigestInit_ex(&ctx, EVP_md5(), NULL);
 		EVP_DigestUpdate(&ctx,p,len);
 		EVP_DigestUpdate(&ctx,buf,n);
 		EVP_DigestFinal_ex(&ctx,out,&n);
