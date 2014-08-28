@@ -424,6 +424,10 @@
 #define NAMED_CURVE_TYPE           3
 #endif  /* OPENSSL_NO_EC */
 
+/* Values for the |hash_message| parameter of |s->method->ssl_get_message|. */
+#define SSL_GET_MESSAGE_DONT_HASH_MESSAGE 0
+#define SSL_GET_MESSAGE_HASH_MESSAGE 1
+
 typedef struct cert_pkey_st
 	{
 	X509 *x509;
@@ -863,7 +867,7 @@ const SSL_CIPHER *ssl3_get_cipher_by_value(uint16_t value);
 uint16_t ssl3_get_cipher_value(const SSL_CIPHER *c);
 void ssl3_init_finished_mac(SSL *s);
 int ssl3_send_server_certificate(SSL *s);
-int ssl3_send_newsession_ticket(SSL *s);
+int ssl3_send_new_session_ticket(SSL *s);
 int ssl3_send_cert_status(SSL *s);
 int ssl3_get_finished(SSL *s,int state_a,int state_b);
 int ssl3_setup_key_block(SSL *s);
@@ -875,7 +879,20 @@ int ssl3_send_alert(SSL *s,int level, int desc);
 int ssl3_generate_master_secret(SSL *s, unsigned char *out,
 	unsigned char *p, int len);
 int ssl3_get_req_cert_type(SSL *s,unsigned char *p);
-long ssl3_get_message(SSL *s, int st1, int stn, int mt, long max, int *ok);
+long ssl3_get_message(SSL *s, int st1, int stn, int mt, long max, int hash_message, int *ok);
+
+/* ssl3_hash_current_message incorporates the current handshake message into
+ * the handshake hash. */
+void ssl3_hash_current_message(SSL *s);
+
+/* ssl3_cert_verify_hash writes the CertificateVerify hash into the bytes
+ * pointed to by |out| and writes the number of bytes to |*out_len|. |out| must
+ * have room for EVP_MAX_MD_SIZE bytes. For TLS 1.2 and up, |*out_md| is used
+ * for the hash function, otherwise the hash function depends on the type of
+ * |pkey| and is written to |*out_md|. It returns one on success and zero on
+ * failure. */
+int ssl3_cert_verify_hash(SSL *s, uint8_t *out, size_t *out_len, const EVP_MD **out_md, EVP_PKEY *pkey);
+
 int ssl3_send_finished(SSL *s, int a, int b, const char *sender,int slen);
 int ssl3_num_ciphers(void);
 const SSL_CIPHER *ssl3_get_cipher(unsigned int u);
@@ -957,17 +974,16 @@ void dtls1_start_timer(SSL *s);
 void dtls1_stop_timer(SSL *s);
 int dtls1_is_timer_expired(SSL *s);
 void dtls1_double_timeout(SSL *s);
-int dtls1_send_newsession_ticket(SSL *s);
 unsigned int dtls1_min_mtu(void);
 
 /* some client-only functions */
-int ssl3_client_hello(SSL *s);
+int ssl3_send_client_hello(SSL *s);
 int ssl3_get_server_hello(SSL *s);
 int ssl3_get_certificate_request(SSL *s);
 int ssl3_get_new_session_ticket(SSL *s);
 int ssl3_get_cert_status(SSL *s);
 int ssl3_get_server_done(SSL *s);
-int ssl3_send_client_verify(SSL *s);
+int ssl3_send_cert_verify(SSL *s);
 int ssl3_send_client_certificate(SSL *s);
 int ssl_do_client_cert_cb(SSL *s, X509 **px509, EVP_PKEY **ppkey);
 int ssl3_send_client_key_exchange(SSL *s);
@@ -1009,7 +1025,7 @@ void dtls1_clear(SSL *s);
 long dtls1_ctrl(SSL *s,int cmd, long larg, void *parg);
 int dtls1_shutdown(SSL *s);
 
-long dtls1_get_message(SSL *s, int st1, int stn, int mt, long max, int *ok);
+long dtls1_get_message(SSL *s, int st1, int stn, int mt, long max, int hash_message, int *ok);
 int dtls1_get_record(SSL *s);
 int dtls1_dispatch_alert(SSL *s);
 int dtls1_enc(SSL *s, int snd);

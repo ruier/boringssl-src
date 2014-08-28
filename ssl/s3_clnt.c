@@ -261,7 +261,7 @@ int ssl3_connect(SSL *s)
 		case SSL3_ST_CW_CLNT_HELLO_B:
 
 			s->shutdown=0;
-			ret=ssl3_client_hello(s);
+			ret=ssl3_send_client_hello(s);
 			if (ret <= 0) goto end;
 			s->state=SSL3_ST_CR_SRVR_HELLO_A;
 			s->init_num=0;
@@ -379,7 +379,7 @@ int ssl3_connect(SSL *s)
 
 		case SSL3_ST_CW_CERT_VRFY_A:
 		case SSL3_ST_CW_CERT_VRFY_B:
-			ret=ssl3_send_client_verify(s);
+			ret=ssl3_send_cert_verify(s);
 			if (ret <= 0) goto end;
 			s->state=SSL3_ST_CW_CHANGE_A;
 			s->init_num=0;
@@ -616,7 +616,7 @@ end:
 	}
 
 
-int ssl3_client_hello(SSL *s)
+int ssl3_send_client_hello(SSL *s)
 	{
 	unsigned char *buf;
 	unsigned char *p,*d;
@@ -647,7 +647,7 @@ int ssl3_client_hello(SSL *s)
 				 */
 				if (options & SSL_OP_NO_DTLSv1)
 					{
-					OPENSSL_PUT_ERROR(SSL, ssl3_client_hello, SSL_R_WRONG_SSL_VERSION);
+					OPENSSL_PUT_ERROR(SSL, ssl3_send_client_hello, SSL_R_WRONG_SSL_VERSION);
 					goto err;
 					}
 				/* Update method so we don't use any DTLS 1.2
@@ -735,7 +735,7 @@ int ssl3_client_hello(SSL *s)
 			{
 			if (i > (int)sizeof(s->session->session_id))
 				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_client_hello, ERR_R_INTERNAL_ERROR);
+				OPENSSL_PUT_ERROR(SSL, ssl3_send_client_hello, ERR_R_INTERNAL_ERROR);
 				goto err;
 				}
 			memcpy(p,s->session->session_id,i);
@@ -747,7 +747,7 @@ int ssl3_client_hello(SSL *s)
 			{
 			if ( s->d1->cookie_len > sizeof(s->d1->cookie))
 				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_client_hello, ERR_R_INTERNAL_ERROR);
+				OPENSSL_PUT_ERROR(SSL, ssl3_send_client_hello, ERR_R_INTERNAL_ERROR);
 				goto err;
 				}
 			*(p++) = s->d1->cookie_len;
@@ -759,7 +759,7 @@ int ssl3_client_hello(SSL *s)
 		i = ssl_cipher_list_to_bytes(s, SSL_get_ciphers(s), &p[2]);
 		if (i == 0)
 			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_client_hello, SSL_R_NO_CIPHERS_AVAILABLE);
+			OPENSSL_PUT_ERROR(SSL, ssl3_send_client_hello, SSL_R_NO_CIPHERS_AVAILABLE);
 			goto err;
 			}
 		s2n(i,p);
@@ -772,12 +772,12 @@ int ssl3_client_hello(SSL *s)
 		/* TLS extensions*/
 		if (ssl_prepare_clienthello_tlsext(s) <= 0)
 			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_client_hello, SSL_R_CLIENTHELLO_TLSEXT);
+			OPENSSL_PUT_ERROR(SSL, ssl3_send_client_hello, SSL_R_CLIENTHELLO_TLSEXT);
 			goto err;
 			}
 		if ((p = ssl_add_clienthello_tlsext(s, p, buf+SSL3_RT_MAX_PLAIN_LENGTH, p-buf)) == NULL)
 			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_client_hello, ERR_R_INTERNAL_ERROR);
+			OPENSSL_PUT_ERROR(SSL, ssl3_send_client_hello, ERR_R_INTERNAL_ERROR);
 			goto err;
 			}
 		
@@ -808,6 +808,7 @@ int ssl3_get_server_hello(SSL *s)
 		SSL3_ST_CR_SRVR_HELLO_B,
 		SSL3_MT_SERVER_HELLO,
 		20000, /* ?? */
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok) return((int)n);
@@ -1002,6 +1003,7 @@ int ssl3_get_server_certificate(SSL *s)
 		SSL3_ST_CR_CERT_B,
 		SSL3_MT_CERTIFICATE,
 		s->max_cert_list,
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok) return((int)n);
@@ -1162,6 +1164,7 @@ int ssl3_get_server_key_exchange(SSL *s)
 		SSL3_ST_CR_KEY_EXCH_B,
 		-1,
 		s->max_cert_list,
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 	if (!ok) return((int)n);
 
@@ -1609,6 +1612,7 @@ int ssl3_get_certificate_request(SSL *s)
 		SSL3_ST_CR_CERT_REQ_B,
 		-1,
 		s->max_cert_list,
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok) return((int)n);
@@ -1762,6 +1766,7 @@ int ssl3_get_new_session_ticket(SSL *s)
 		SSL3_ST_CR_SESSION_TICKET_B,
 		SSL3_MT_NEWSESSION_TICKET,
 		16384,
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok)
@@ -1823,6 +1828,7 @@ int ssl3_get_cert_status(SSL *s)
 		SSL3_ST_CR_CERT_STATUS_B,
 		SSL3_MT_CERTIFICATE_STATUS,
 		16384,
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok) return((int)n);
@@ -1883,6 +1889,7 @@ int ssl3_get_server_done(SSL *s)
 		SSL3_ST_CR_SRVR_DONE_B,
 		SSL3_MT_SERVER_DONE,
 		30, /* should be very small, like 0 :-) */
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok) return((int)n);
@@ -2305,72 +2312,44 @@ err:
 	return(-1);
 	}
 
-int ssl3_send_client_verify(SSL *s)
+int ssl3_send_cert_verify(SSL *s)
 	{
 	unsigned char *buf, *p;
-	const EVP_MD *md;
+	const EVP_MD *md = NULL;
 	uint8_t digest[EVP_MAX_MD_SIZE];
-	unsigned digest_length;
+	size_t digest_length;
 	EVP_PKEY *pkey;
 	EVP_PKEY_CTX *pctx = NULL;
-	EVP_MD_CTX mctx;
 	size_t signature_length = 0;
 	unsigned long n = 0;
 
-	EVP_MD_CTX_init(&mctx);
 	buf=(unsigned char *)s->init_buf->data;
 
 	if (s->state == SSL3_ST_CW_CERT_VRFY_A)
 		{
 		p= ssl_handshake_start(s);
 		pkey = s->cert->key->privatekey;
-		/* For TLS v1.2 send signature algorithm and signature using
-		 * agreed digest and cached handshake records. Otherwise, use
-		 * SHA1 or MD5 + SHA1 depending on key type.
-		 */
+
+		/* Write out the digest type if needbe. */
 		if (SSL_USE_SIGALGS(s))
 			{
-			const uint8_t *hdata;
-			size_t hdatalen;
 			md = s->cert->key->digest;
-			if (!BIO_mem_contents(s->s3->handshake_buffer, &hdata, &hdatalen) ||
-			    !tls12_get_sigandhash(p, pkey, md))
+			if (!tls12_get_sigandhash(p, pkey, md))
 				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_send_client_verify, ERR_R_INTERNAL_ERROR);
+				OPENSSL_PUT_ERROR(SSL, ssl3_send_cert_verify, ERR_R_INTERNAL_ERROR);
 				goto err;
 				}
 			p += 2;
 			n += 2;
-			if (!EVP_DigestInit_ex(&mctx, md, NULL)
-				|| !EVP_DigestUpdate(&mctx, hdata, hdatalen)
-				|| !EVP_DigestFinal(&mctx, digest, &digest_length))
-				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_send_client_verify, ERR_R_EVP_LIB);
-				goto err;
-				}
 			}
-		else if (pkey->type == EVP_PKEY_RSA)
-			{
-			s->method->ssl3_enc->cert_verify_mac(s, NID_md5, digest);
-			s->method->ssl3_enc->cert_verify_mac(s,
-				NID_sha1, &digest[MD5_DIGEST_LENGTH]);
-			digest_length = MD5_DIGEST_LENGTH + SHA_DIGEST_LENGTH;
-			/* Using a NULL signature MD makes EVP_PKEY_sign perform
-			 * a raw RSA signature, rather than wrapping in a
-			 * DigestInfo. */
-			md = NULL;
-			}
-		else if (pkey->type == EVP_PKEY_EC)
-			{
-			s->method->ssl3_enc->cert_verify_mac(s, NID_sha1, digest);
-			digest_length = SHA_DIGEST_LENGTH;
-			md = EVP_sha1();
-			}
-		else
-			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_send_client_verify, ERR_R_INTERNAL_ERROR);
+
+		/* Compute the digest. */
+		if (!ssl3_cert_verify_hash(s, digest, &digest_length, &md, pkey))
 			goto err;
-			}
+
+		/* The handshake buffer is no longer necessary. */
+		if (s->s3->handshake_buffer && !ssl3_digest_cached_records(s))
+			goto err;
 
 		/* Sign the digest. */
 		pctx = EVP_PKEY_CTX_new(pkey, NULL);
@@ -2378,47 +2357,37 @@ int ssl3_send_client_verify(SSL *s)
 			goto err;
 
 		/* Initialize the EVP_PKEY_CTX and determine the size of the signature. */
-		if (EVP_PKEY_sign_init(pctx) != 1 ||
-			EVP_PKEY_CTX_set_signature_md(pctx, md) != 1 ||
-			EVP_PKEY_sign(pctx, NULL, &signature_length,
-				digest, digest_length) != 1)
+		if (!EVP_PKEY_sign_init(pctx) ||
+			!EVP_PKEY_CTX_set_signature_md(pctx, md) ||
+			!EVP_PKEY_sign(pctx, NULL, &signature_length,
+				digest, digest_length))
 			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_send_client_verify, ERR_R_EVP_LIB);
+			OPENSSL_PUT_ERROR(SSL, ssl3_send_cert_verify, ERR_R_EVP_LIB);
 			goto err;
 			}
 
 		if (p + 2 + signature_length > buf + SSL3_RT_MAX_PLAIN_LENGTH)
 			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_send_client_verify, SSL_R_DATA_LENGTH_TOO_LONG);
+			OPENSSL_PUT_ERROR(SSL, ssl3_send_cert_verify, SSL_R_DATA_LENGTH_TOO_LONG);
 			goto err;
 			}
 
-		if (EVP_PKEY_sign(pctx, &p[2], &signature_length,
-				digest, digest_length) != 1)
+		if (!EVP_PKEY_sign(pctx, &p[2], &signature_length,
+				digest, digest_length))
 			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_send_client_verify, ERR_R_EVP_LIB);
+			OPENSSL_PUT_ERROR(SSL, ssl3_send_cert_verify, ERR_R_EVP_LIB);
 			goto err;
 			}
 
 		s2n(signature_length, p);
 		n += signature_length + 2;
 
-		/* Now that client auth is completed, we no longer need cached
-		 * handshake records and can digest them. */
-		if (SSL_USE_SIGALGS(s))
-			{
-			if (!ssl3_digest_cached_records(s))
-				goto err;
-			}
-
 		ssl_set_handshake_header(s, SSL3_MT_CERTIFICATE_VERIFY, n);
 		s->state=SSL3_ST_CW_CERT_VRFY_B;
 		}
-	EVP_MD_CTX_cleanup(&mctx);
 	EVP_PKEY_CTX_free(pctx);
 	return ssl_do_write(s);
 err:
-	EVP_MD_CTX_cleanup(&mctx);
 	EVP_PKEY_CTX_free(pctx);
 	return(-1);
 	}

@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -25,11 +29,14 @@ const (
 )
 
 const (
-	rsaKeyFile   = "key.pem"
-	ecdsaKeyFile = "ecdsa_key.pem"
+	rsaKeyFile       = "key.pem"
+	ecdsaKeyFile     = "ecdsa_key.pem"
+	channelIDKeyFile = "channel_id_key.pem"
 )
 
 var rsaCertificate, ecdsaCertificate Certificate
+var channelIDKey *ecdsa.PrivateKey
+var channelIDBytes []byte
 
 func initCertificates() {
 	var err error
@@ -42,6 +49,26 @@ func initCertificates() {
 	if err != nil {
 		panic(err)
 	}
+
+	channelIDPEMBlock, err := ioutil.ReadFile(channelIDKeyFile)
+	if err != nil {
+		panic(err)
+	}
+	channelIDDERBlock, _ := pem.Decode(channelIDPEMBlock)
+	if channelIDDERBlock.Type != "EC PRIVATE KEY" {
+		panic("bad key type")
+	}
+	channelIDKey, err = x509.ParseECPrivateKey(channelIDDERBlock.Bytes)
+	if err != nil {
+		panic(err)
+	}
+	if channelIDKey.Curve != elliptic.P256() {
+		panic("bad curve")
+	}
+
+	channelIDBytes = make([]byte, 64)
+	writeIntPadded(channelIDBytes[:32], channelIDKey.X)
+	writeIntPadded(channelIDBytes[32:], channelIDKey.Y)
 }
 
 var certificateOnce sync.Once
@@ -83,6 +110,9 @@ type testCase struct {
 	// expectedVersion, if non-zero, specifies the TLS version that must be
 	// negotiated.
 	expectedVersion uint16
+	// expectChannelID controls whether the connection should have
+	// negotiated a Channel ID with channelIDKey.
+	expectChannelID bool
 	// messageLen is the length, in bytes, of the test message that will be
 	// sent.
 	messageLen int
@@ -96,6 +126,9 @@ type testCase struct {
 	// sendPrefix sends a prefix on the socket before actually performing a
 	// handshake.
 	sendPrefix string
+	// shimWritesFirst controls whether the shim sends an initial "hello"
+	// message before doing a roundtrip with the runner.
+	shimWritesFirst bool
 	// flags, if not empty, contains a list of command-line flags that will
 	// be passed to the shim program.
 	flags []string
@@ -160,7 +193,7 @@ var testCases = []testCase{
 		expectedLocalError: "no fallback SCSV found",
 	},
 	{
-		name: "FallbackSCSV",
+		name: "SendFallbackSCSV",
 		config: Config{
 			Bugs: ProtocolBugs{
 				FailIfNotFallbackSCSV: true,
@@ -208,11 +241,14 @@ var testCases = []testCase{
 				CertTypeECDSASign,
 			},
 		},
-		flags: []string{"-expect-certificate-types", string([]byte{
-			CertTypeDSSSign,
-			CertTypeRSASign,
-			CertTypeECDSASign,
-		})},
+		flags: []string{
+			"-expect-certificate-types",
+			base64.StdEncoding.EncodeToString([]byte{
+				CertTypeDSSSign,
+				CertTypeRSASign,
+				CertTypeECDSASign,
+			}),
+		},
 	},
 	{
 		name: "NoClientCertificate",
@@ -484,6 +520,29 @@ func doExchange(test *testCase, config *Config, conn net.Conn, messageLen int) e
 		return fmt.Errorf("got version %x, expected %x", vers, test.expectedVersion)
 	}
 
+	if test.expectChannelID {
+		channelID := tlsConn.ConnectionState().ChannelID
+		if channelID == nil {
+			return fmt.Errorf("no channel ID negotiated")
+		}
+		if channelID.Curve != channelIDKey.Curve ||
+			channelIDKey.X.Cmp(channelIDKey.X) != 0 ||
+			channelIDKey.Y.Cmp(channelIDKey.Y) != 0 {
+			return fmt.Errorf("incorrect channel ID")
+		}
+	}
+
+	if test.shimWritesFirst {
+		var buf [5]byte
+		_, err := io.ReadFull(tlsConn, buf[:])
+		if err != nil {
+			return err
+		}
+		if string(buf[:]) != "hello" {
+			return fmt.Errorf("bad initial message")
+		}
+	}
+
 	if messageLen < 0 {
 		if test.protocol == dtls {
 			return fmt.Errorf("messageLen < 0 not supported for DTLS tests")
@@ -599,6 +658,10 @@ func runTest(test *testCase, buildDir string) error {
 
 	if test.resumeSession {
 		flags = append(flags, "-resume")
+	}
+
+	if test.shimWritesFirst {
+		flags = append(flags, "-shim-writes-first")
 	}
 
 	flags = append(flags, test.flags...)
@@ -1111,13 +1174,15 @@ func addStateMachineCoverageTests(async, splitHandshake bool, protocol protocol)
 				CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
 				NextProtos:   []string{"foo"},
 				Bugs: ProtocolBugs{
+					ExpectFalseStart:         true,
 					MaxHandshakeRecordLength: maxHandshakeRecordLength,
 				},
 			},
 			flags: append(flags,
 				"-false-start",
 				"-select-next-proto", "foo"),
-			resumeSession: true,
+			shimWritesFirst: true,
+			resumeSession:   true,
 		})
 
 		// False Start without session tickets.
@@ -1127,14 +1192,19 @@ func addStateMachineCoverageTests(async, splitHandshake bool, protocol protocol)
 				CipherSuites:           []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
 				NextProtos:             []string{"foo"},
 				SessionTicketsDisabled: true,
+				Bugs: ProtocolBugs{
+					ExpectFalseStart:         true,
+					MaxHandshakeRecordLength: maxHandshakeRecordLength,
+				},
 			},
-			flags: []string{
+			flags: append(flags,
 				"-false-start",
 				"-select-next-proto", "foo",
-			},
+			),
+			shimWritesFirst: true,
 		})
 
-		// Client sends a V2ClientHello.
+		// Server parses a V2ClientHello.
 		testCases = append(testCases, testCase{
 			protocol: protocol,
 			testType: serverTest,
@@ -1150,6 +1220,42 @@ func addStateMachineCoverageTests(async, splitHandshake bool, protocol protocol)
 				},
 			},
 			flags: flags,
+		})
+
+		// Client sends a Channel ID.
+		testCases = append(testCases, testCase{
+			protocol: protocol,
+			name:     "ChannelID-Client" + suffix,
+			config: Config{
+				RequestChannelID: true,
+				Bugs: ProtocolBugs{
+					MaxHandshakeRecordLength: maxHandshakeRecordLength,
+				},
+			},
+			flags: append(flags,
+				"-send-channel-id", channelIDKeyFile,
+			),
+			resumeSession:   true,
+			expectChannelID: true,
+		})
+
+		// Server accepts a Channel ID.
+		testCases = append(testCases, testCase{
+			protocol: protocol,
+			testType: serverTest,
+			name:     "ChannelID-Server" + suffix,
+			config: Config{
+				ChannelID: channelIDKey,
+				Bugs: ProtocolBugs{
+					MaxHandshakeRecordLength: maxHandshakeRecordLength,
+				},
+			},
+			flags: append(flags,
+				"-expect-channel-id",
+				base64.StdEncoding.EncodeToString(channelIDBytes),
+			),
+			resumeSession:   true,
+			expectChannelID: true,
 		})
 	} else {
 		testCases = append(testCases, testCase{

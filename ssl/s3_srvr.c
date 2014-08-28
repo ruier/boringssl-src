@@ -148,6 +148,7 @@
 
 #define NETSCAPE_HANG_BUG
 
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -485,54 +486,6 @@ int ssl3_accept(SSL *s)
 				goto end;
 			s->state=SSL3_ST_SR_CERT_VRFY_A;
 			s->init_num=0;
-
-			/* TODO(davidben): These two blocks are different
-			 * between SSL and DTLS. Resolve the difference and code
-			 * duplication. */
-			if (SSL_USE_SIGALGS(s))
-				{
-				if (!s->session->peer)
-					break;
-				/* For sigalgs freeze the handshake buffer
-				 * at this point and digest cached records.
-				 */
-				if (!s->s3->handshake_buffer)
-					{
-					OPENSSL_PUT_ERROR(SSL, ssl3_accept, ERR_R_INTERNAL_ERROR);
-					return -1;
-					}
-				s->s3->flags |= TLS1_FLAGS_KEEP_HANDSHAKE;
-				if (!ssl3_digest_cached_records(s))
-					return -1;
-				}
-			else
-				{
-				int offset=0;
-				int dgst_num;
-
-				/* We need to get hashes here so if there is
-				 * a client cert, it can be verified
-				 * FIXME - digest processing for CertificateVerify
-				 * should be generalized. But it is next step
-				 */
-				if (s->s3->handshake_buffer)
-					if (!ssl3_digest_cached_records(s))
-						return -1;
-				for (dgst_num=0; dgst_num<SSL_MAX_DIGEST;dgst_num++)	
-					if (s->s3->handshake_dgst[dgst_num]) 
-						{
-						int dgst_size;
-
-						s->method->ssl3_enc->cert_verify_mac(s,EVP_MD_CTX_type(s->s3->handshake_dgst[dgst_num]),&(s->s3->tmp.cert_verify_md[offset]));
-						dgst_size=EVP_MD_CTX_size(s->s3->handshake_dgst[dgst_num]);
-						if (dgst_size < 0)
-							{
-							ret = -1;
-							goto end;
-							}
-						offset+=dgst_size;
-						}		
-				}
 			break;
 
 		case SSL3_ST_SR_CERT_VRFY_A:
@@ -614,7 +567,7 @@ int ssl3_accept(SSL *s)
 
 		case SSL3_ST_SW_SESSION_TICKET_A:
 		case SSL3_ST_SW_SESSION_TICKET_B:
-			ret=ssl3_send_newsession_ticket(s);
+			ret=ssl3_send_new_session_ticket(s);
 			if (ret <= 0) goto end;
 			s->state=SSL3_ST_SW_CHANGE_A;
 			s->init_num=0;
@@ -778,6 +731,7 @@ int ssl3_get_client_hello(SSL *s)
 			SSL3_ST_SR_CLNT_HELLO_B,
 			SSL3_MT_CLIENT_HELLO,
 			SSL3_RT_MAX_PLAIN_LENGTH,
+			SSL_GET_MESSAGE_HASH_MESSAGE,
 			&ok);
 
 		if (!ok) return((int)n);
@@ -1842,6 +1796,7 @@ int ssl3_get_client_key_exchange(SSL *s)
 		SSL3_ST_SR_KEY_EXCH_B,
 		SSL3_MT_CLIENT_KEY_EXCHANGE,
 		2048, /* ??? */
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok) return((int)n);
@@ -2295,29 +2250,24 @@ err:
 
 int ssl3_get_cert_verify(SSL *s)
 	{
-	EVP_PKEY *pkey=NULL;
 	int al,ok,ret=0;
 	long n;
 	CBS certificate_verify, signature;
-	int type = 0;
 	X509 *peer = s->session->peer;
+	EVP_PKEY *pkey = NULL;
 	const EVP_MD *md = NULL;
-	EVP_MD_CTX mctx;
+	uint8_t digest[EVP_MAX_MD_SIZE];
+	size_t digest_length;
+	EVP_PKEY_CTX *pctx = NULL;
 
-	EVP_MD_CTX_init(&mctx);
-
-	/* Determine if a CertificateVerify message is expected at all. It is
-	 * important that this be determined before ssl_get_message is called,
-	 * so as not to process the ChangeCipherSpec message early. */
-	if (peer != NULL)
+	/* Only RSA and ECDSA client certificates are supported, so a
+	 * CertificateVerify is required if and only if there's a
+	 * client certificate. */
+	if (peer == NULL)
 		{
-		pkey = X509_get_pubkey(peer);
-		type = X509_certificate_type(peer,pkey);
-		}
-	if (!(type & EVP_PKT_SIGN))
-		{
-		ret = 1;
-		goto done_with_buffer;
+		if (s->s3->handshake_buffer && !ssl3_digest_cached_records(s))
+			return -1;
+		return 1;
 		}
 
 	n=s->method->ssl_get_message(s,
@@ -2325,26 +2275,42 @@ int ssl3_get_cert_verify(SSL *s)
 		SSL3_ST_SR_CERT_VRFY_B,
 		SSL3_MT_CERTIFICATE_VERIFY,
 		SSL3_RT_MAX_PLAIN_LENGTH,
+		SSL_GET_MESSAGE_DONT_HASH_MESSAGE,
 		&ok);
 
 	if (!ok)
+		return (int)n;
+
+	/* Filter out unsupported certificate types. */
+	pkey = X509_get_pubkey(peer);
+	if (!(X509_certificate_type(peer, pkey) & EVP_PKT_SIGN) ||
+		(pkey->type != EVP_PKEY_RSA && pkey->type != EVP_PKEY_EC))
 		{
-		ret = (int)n;
-		goto done;
+		al = SSL_AD_UNSUPPORTED_CERTIFICATE;
+		OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, SSL_R_PEER_ERROR_UNSUPPORTED_CERTIFICATE_TYPE);
+		goto f_err;
 		}
 
 	CBS_init(&certificate_verify, s->init_msg, n);
 
-	/* We now have a signature that we need to verify. */
-	/* TODO(davidben): This should share code with
-	 * ssl3_get_server_key_exchange. */
-
+	/* Determine the digest type if needbe. */
 	if (SSL_USE_SIGALGS(s))
 		{
 		if (!tls12_check_peer_sigalg(&md, &al, s, &certificate_verify, pkey))
 			goto f_err;
 		}
 
+	/* Compute the digest. */
+	if (!ssl3_cert_verify_hash(s, digest, &digest_length, &md, pkey))
+		goto err;
+
+	/* The handshake buffer is no longer necessary, and we may hash the
+	 * current message.*/
+	if (s->s3->handshake_buffer && !ssl3_digest_cached_records(s))
+		goto err;
+	ssl3_hash_current_message(s);
+
+	/* Parse and verify the signature. */
 	if (!CBS_get_u16_length_prefixed(&certificate_verify, &signature) ||
 		CBS_len(&certificate_verify) != 0)
 		{
@@ -2353,87 +2319,27 @@ int ssl3_get_cert_verify(SSL *s)
 		goto f_err;
 		}
 
-	if (SSL_USE_SIGALGS(s))
+	pctx = EVP_PKEY_CTX_new(pkey, NULL);
+	if (pctx == NULL)
+		goto err;
+	if (!EVP_PKEY_verify_init(pctx) ||
+		!EVP_PKEY_CTX_set_signature_md(pctx, md) ||
+		!EVP_PKEY_verify(pctx, CBS_data(&signature), CBS_len(&signature),
+			digest, digest_length))
 		{
-		size_t hdatalen;
-		const uint8_t *hdata;
-		if (!BIO_mem_contents(s->s3->handshake_buffer, &hdata, &hdatalen))
-			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, ERR_R_INTERNAL_ERROR);
-			al=SSL_AD_INTERNAL_ERROR;
-			goto f_err;
-			}
-		if (!EVP_VerifyInit_ex(&mctx, md, NULL)
-			|| !EVP_VerifyUpdate(&mctx, hdata, hdatalen))
-			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, ERR_R_EVP_LIB);
-			al=SSL_AD_INTERNAL_ERROR;
-			goto f_err;
-			}
-
-		if (EVP_VerifyFinal(&mctx,
-				CBS_data(&signature), CBS_len(&signature),
-				pkey) <= 0)
-			{
-			al=SSL_AD_DECRYPT_ERROR;
-			OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, SSL_R_BAD_SIGNATURE);
-			goto f_err;
-			}
-		}
-	else
-	if (pkey->type == EVP_PKEY_RSA)
-		{
-		if (!RSA_verify(NID_md5_sha1, s->s3->tmp.cert_verify_md,
-				MD5_DIGEST_LENGTH+SHA_DIGEST_LENGTH,
-				CBS_data(&signature), CBS_len(&signature),
-				pkey->pkey.rsa))
-			{
-			al = SSL_AD_DECRYPT_ERROR;
-			OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, SSL_R_BAD_RSA_SIGNATURE);
-			goto f_err;
-			}
-		}
-	else
-#ifndef OPENSSL_NO_ECDSA
-		if (pkey->type == EVP_PKEY_EC)
-		{
-		if (!ECDSA_verify(pkey->save_type,
-				&(s->s3->tmp.cert_verify_md[MD5_DIGEST_LENGTH]),
-				SHA_DIGEST_LENGTH,
-				CBS_data(&signature), CBS_len(&signature),
-				pkey->pkey.ec))
-			{
-			/* bad signature */
-			al = SSL_AD_DECRYPT_ERROR;
-			OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, SSL_R_BAD_ECDSA_SIGNATURE);
-			goto f_err;
-			}
-		}
-	else
-#endif
-		{
-		OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, ERR_R_INTERNAL_ERROR);
-		al=SSL_AD_UNSUPPORTED_CERTIFICATE;
+		al = SSL_AD_DECRYPT_ERROR;
+		OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, SSL_R_BAD_SIGNATURE);
 		goto f_err;
 		}
 
-
-	ret=1;
+	ret = 1;
 	if (0)
 		{
 f_err:
 		ssl3_send_alert(s,SSL3_AL_FATAL,al);
 		}
-done_with_buffer:
-	/* There is no more need for the handshake buffer. */
-	if (s->s3->handshake_buffer)
-		{
-		BIO_free(s->s3->handshake_buffer);
-		s->s3->handshake_buffer = NULL;
-		s->s3->flags &= ~TLS1_FLAGS_KEEP_HANDSHAKE;
-		}
-done:
-	EVP_MD_CTX_cleanup(&mctx);
+err:
+	EVP_PKEY_CTX_free(pctx);
 	EVP_PKEY_free(pkey);
 	return(ret);
 	}
@@ -2453,6 +2359,7 @@ int ssl3_get_client_certificate(SSL *s)
 		SSL3_ST_SR_CERT_B,
 		-1,
 		s->max_cert_list,
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok) return((int)n);
@@ -2643,7 +2550,7 @@ int ssl3_send_server_certificate(SSL *s)
 	}
 
 /* send a new session ticket (not necessarily for a new session) */
-int ssl3_send_newsession_ticket(SSL *s)
+int ssl3_send_new_session_ticket(SSL *s)
 	{
 	if (s->state == SSL3_ST_SW_SESSION_TICKET_A)
 		{
@@ -2827,6 +2734,7 @@ int ssl3_get_next_proto(SSL *s)
 		SSL3_ST_SR_NEXT_PROTO_B,
 		SSL3_MT_NEXT_PROTO,
 		514,  /* See the payload format below */
+		SSL_GET_MESSAGE_HASH_MESSAGE,
 		&ok);
 
 	if (!ok)
@@ -2870,6 +2778,9 @@ int ssl3_get_channel_id(SSL *s)
 	{
 	int ret = -1, ok;
 	long n;
+	EVP_MD_CTX md_ctx;
+	uint8_t channel_id_hash[SHA256_DIGEST_LENGTH];
+	unsigned int channel_id_hash_len;
 	const uint8_t *p;
 	uint16_t extension_type, expected_extension_type;
 	EC_GROUP* p256 = NULL;
@@ -2879,33 +2790,32 @@ int ssl3_get_channel_id(SSL *s)
 	BIGNUM x, y;
 	CBS encrypted_extensions, extension;
 
-	if (s->state == SSL3_ST_SR_CHANNEL_ID_A && s->init_num == 0)
-		{
-		/* The first time that we're called we take the current
-		 * handshake hash and store it. */
-		EVP_MD_CTX md_ctx;
-		unsigned int len;
-
-		EVP_MD_CTX_init(&md_ctx);
-		EVP_DigestInit_ex(&md_ctx, EVP_sha256(), NULL);
-		if (!tls1_channel_id_hash(&md_ctx, s))
-			return -1;
-		len = sizeof(s->s3->tlsext_channel_id);
-		EVP_DigestFinal(&md_ctx, s->s3->tlsext_channel_id, &len);
-		EVP_MD_CTX_cleanup(&md_ctx);
-		}
-
 	n = s->method->ssl_get_message(s,
 		SSL3_ST_SR_CHANNEL_ID_A,
 		SSL3_ST_SR_CHANNEL_ID_B,
 		SSL3_MT_ENCRYPTED_EXTENSIONS,
 		2 + 2 + TLSEXT_CHANNEL_ID_SIZE,
+		SSL_GET_MESSAGE_DONT_HASH_MESSAGE,
 		&ok);
 
 	if (!ok)
 		return((int)n);
 
-	ssl3_finish_mac(s, (unsigned char*)s->init_buf->data, s->init_num + 4);
+	/* Before incorporating the EncryptedExtensions message to the
+	 * handshake hash, compute the hash that should have been signed. */
+	channel_id_hash_len = sizeof(channel_id_hash);
+	EVP_MD_CTX_init(&md_ctx);
+	if (!EVP_DigestInit_ex(&md_ctx, EVP_sha256(), NULL) ||
+		!tls1_channel_id_hash(&md_ctx, s) ||
+		!EVP_DigestFinal(&md_ctx, channel_id_hash, &channel_id_hash_len))
+		{
+		EVP_MD_CTX_cleanup(&md_ctx);
+		return -1;
+		}
+	EVP_MD_CTX_cleanup(&md_ctx);
+	assert(channel_id_hash_len == SHA256_DIGEST_LENGTH);
+
+	ssl3_hash_current_message(s);
 
 	/* s->state doesn't reflect whether ChangeCipherSpec has been received
 	 * in this handshake, but s->s3->change_cipher_spec does (will be reset
@@ -2978,17 +2888,12 @@ int ssl3_get_channel_id(SSL *s)
 
 	/* We stored the handshake hash in |tlsext_channel_id| the first time
 	 * that we were called. */
-	switch (ECDSA_do_verify(s->s3->tlsext_channel_id, SHA256_DIGEST_LENGTH, &sig, key)) {
-	case 1:
-		break;
-	case 0:
+	if (!ECDSA_do_verify(channel_id_hash, channel_id_hash_len, &sig, key))
+		{
 		OPENSSL_PUT_ERROR(SSL, ssl3_get_channel_id, SSL_R_CHANNEL_ID_SIGNATURE_INVALID);
 		s->s3->tlsext_channel_id_valid = 0;
 		goto err;
-	default:
-		s->s3->tlsext_channel_id_valid = 0;
-		goto err;
-	}
+		}
 
 	memcpy(s->s3->tlsext_channel_id, p, 64);
 	ret = 1;
