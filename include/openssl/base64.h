@@ -102,6 +102,12 @@ OPENSSL_EXPORT void EVP_EncodeFinal(EVP_ENCODE_CTX *ctx, uint8_t *out,
 OPENSSL_EXPORT size_t
     EVP_EncodeBlock(uint8_t *dst, const uint8_t *src, size_t src_len);
 
+/* EVP_EncodedLength sets |*out_len| to the number of bytes that will be needed
+ * to call |EVP_EncodeBlock| on an input of length |len|. This includes the
+ * final NUL that |EVP_EncodeBlock| writes. It returns one on success or zero
+ * on error. */
+OPENSSL_EXPORT int EVP_EncodedLength(size_t *out_len, size_t len);
+
 
 /* Decoding */
 
@@ -134,9 +140,8 @@ OPENSSL_EXPORT int EVP_DecodeFinal(EVP_ENCODE_CTX *ctx, uint8_t *out,
  *
  * WARNING: EVP_DecodeBlock's return value does not take padding into
  * account. TODO(davidben): Possible or worth it to fix or add new API? */
-OPENSSL_EXPORT ssize_t
-    EVP_DecodeBlock(uint8_t *dst, const uint8_t *src, size_t src_len);
-
+OPENSSL_EXPORT int EVP_DecodeBlock(uint8_t *dst, const uint8_t *src,
+                                   size_t src_len);
 
 struct evp_encode_ctx_st {
   unsigned num;    /* number saved in a partial encode/decode */

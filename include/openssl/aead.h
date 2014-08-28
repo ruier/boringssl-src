@@ -92,10 +92,10 @@ extern "C" {
 
 /* AEAD algorithms. */
 
-/* EVP_aes_128_gcm is AES-128 in Galois Counter Mode. */
+/* EVP_aead_aes_128_gcm is AES-128 in Galois Counter Mode. */
 OPENSSL_EXPORT const EVP_AEAD *EVP_aead_aes_128_gcm(void);
 
-/* EVP_aes_256_gcm is AES-256 in Galois Counter Mode. */
+/* EVP_aead_aes_256_gcm is AES-256 in Galois Counter Mode. */
 OPENSSL_EXPORT const EVP_AEAD *EVP_aead_aes_256_gcm(void);
 
 /* EVP_aead_chacha20_poly1305 is an AEAD built from ChaCha20 and Poly1305. */
@@ -114,6 +114,10 @@ OPENSSL_EXPORT const EVP_AEAD *EVP_aead_aes_128_key_wrap();
  *
  * See |EVP_aead_aes_128_key_wrap| for details. */
 OPENSSL_EXPORT const EVP_AEAD *EVP_aead_aes_256_key_wrap();
+
+/* EVP_has_aes_hardware returns one if we enable hardware support for fast and
+ * constant-time AES-GCM. */
+OPENSSL_EXPORT int EVP_has_aes_hardware(void);
 
 
 /* TLS specific AEAD algorithms.

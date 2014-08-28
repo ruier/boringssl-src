@@ -495,8 +495,9 @@ int tls1_change_cipher_state(SSL *s, int which)
 	unsigned key_len, iv_len, mac_secret_len;
 	const unsigned char *key_data;
 
-	/* Reset sequence number to zero. */
-	if (s->version != DTLS1_VERSION)
+	/* Reset sequence number to zero.
+	 * TODO(davidben): Is this redundant with dtls1_reset_seq_numbers? */
+	if (SSL_IS_DTLS(s))
 		memset(is_read ? s->s3->read_sequence : s->s3->write_sequence, 0, 8);
 
 	/* key_arg is used for SSLv2. We don't need it for TLS. */
@@ -675,9 +676,6 @@ printf("\nkey block\n");
 
 		if (s->session->cipher != NULL)
 			{
-			if (s->session->cipher->algorithm_enc == SSL_eNULL)
-				s->s3->need_record_splitting = 0;
-			
 #ifndef OPENSSL_NO_RC4
 			if (s->session->cipher->algorithm_enc == SSL_RC4)
 				s->s3->need_record_splitting = 0;
@@ -735,7 +733,7 @@ int tls1_enc(SSL *s, int send)
 
 		seq = send ? s->s3->write_sequence : s->s3->read_sequence;
 
-		if (s->version == DTLS1_VERSION || s->version == DTLS1_BAD_VER)
+		if (SSL_IS_DTLS(s))
 			{
 			unsigned char dtlsseq[9], *p = dtlsseq;
 

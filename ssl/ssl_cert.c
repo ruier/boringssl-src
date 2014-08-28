@@ -159,9 +159,6 @@ int SSL_get_ex_data_X509_STORE_CTX_idx(void)
 void ssl_cert_set_default_md(CERT *cert)
 	{
 	/* Set digest values to defaults */
-#ifndef OPENSSL_NO_DSA
-	cert->pkeys[SSL_PKEY_DSA_SIGN].digest = EVP_sha1();
-#endif
 	cert->pkeys[SSL_PKEY_RSA_SIGN].digest = EVP_sha1();
 	cert->pkeys[SSL_PKEY_RSA_ENC].digest = EVP_sha1();
 #ifndef OPENSSL_NO_ECDSA
@@ -281,15 +278,6 @@ CERT *ssl_cert_dup(CERT *cert)
 				/* We have an RSA key. */
 				break;
 				
-			case SSL_PKEY_DSA_SIGN:
-				/* We have a DSA key. */
-				break;
-				
-			case SSL_PKEY_DH_RSA:
-			case SSL_PKEY_DH_DSA:
-				/* We have a DH key. */
-				break;
-
 			case SSL_PKEY_ECC:
 				/* We have an ECC key */
 				break;
@@ -576,7 +564,6 @@ SESS_CERT *ssl_sess_cert_new(void)
 
 	memset(ret, 0 ,sizeof *ret);
 	ret->peer_key = &(ret->peer_pkeys[SSL_PKEY_RSA_ENC]);
-	ret->references = 1;
 
 	return ret;
 	}
@@ -588,21 +575,6 @@ void ssl_sess_cert_free(SESS_CERT *sc)
 	if (sc == NULL)
 		return;
 
-	i = CRYPTO_add(&sc->references, -1, CRYPTO_LOCK_SSL_SESS_CERT);
-#ifdef REF_PRINT
-	REF_PRINT("SESS_CERT", sc);
-#endif
-	if (i > 0)
-		return;
-#ifdef REF_CHECK
-	if (i < 0)
-		{
-		fprintf(stderr,"ssl_sess_cert_free, bad reference count\n");
-		abort(); /* ok */
-		}
-#endif
-
-	/* i == 0 */
 	if (sc->cert_chain != NULL)
 		sk_X509_pop_free(sc->cert_chain, X509_free);
 	for (i = 0; i < SSL_PKEY_NUM; i++)
@@ -658,8 +630,6 @@ int ssl_verify_cert_chain(SSL *s,STACK_OF(X509) *sk)
 		OPENSSL_PUT_ERROR(SSL, ssl_verify_cert_chain, ERR_R_X509_LIB);
 		return(0);
 		}
-	/* Set suite B flags if needed */
-	X509_STORE_CTX_set_flags(&ctx, tls1_suiteb(s));
 #if 0
 	if (SSL_get_verify_depth(s) >= 0)
 		X509_STORE_CTX_set_depth(&ctx, SSL_get_verify_depth(s));
@@ -1149,8 +1119,6 @@ int ssl_build_cert_chain(CERT *c, X509_STORE *chain_store, int flags)
 		OPENSSL_PUT_ERROR(SSL, ssl_build_cert_chain, ERR_R_X509_LIB);
 		goto err;
 		}
-	/* Set suite B flags if needed */
-	X509_STORE_CTX_set_flags(&xs_ctx, c->cert_flags & SSL_CERT_FLAG_SUITEB_128_LOS);
 
 	i = X509_verify_cert(&xs_ctx);
 	if (i <= 0 && flags & SSL_BUILD_CHAIN_FLAG_IGNORE_ERROR)

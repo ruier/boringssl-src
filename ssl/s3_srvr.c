@@ -258,8 +258,6 @@ int ssl3_accept(SSL *s)
 				}
 
 			s->init_num=0;
-			s->s3->flags &= ~SSL3_FLAGS_SGC_RESTART_DONE;
-			s->s3->flags &= ~TLS1_FLAGS_SKIP_CERT_VERIFY;
 
 			if (s->state != SSL_ST_RENEGOTIATE)
 				{
@@ -471,21 +469,13 @@ int ssl3_accept(SSL *s)
 
 		case SSL3_ST_SR_CERT_A:
 		case SSL3_ST_SR_CERT_B:
-			/* Check for second client hello (MS SGC) */
-			ret = ssl3_check_client_hello(s);
-			if (ret <= 0)
-				goto end;
-			if (ret == 2)
-				s->state = SSL3_ST_SR_CLNT_HELLO_C;
-			else {
-				if (s->s3->tmp.cert_request)
-					{
-					ret=ssl3_get_client_certificate(s);
-					if (ret <= 0) goto end;
-					}
-				s->init_num=0;
-				s->state=SSL3_ST_SR_KEY_EXCH_A;
-			}
+			if (s->s3->tmp.cert_request)
+				{
+				ret=ssl3_get_client_certificate(s);
+				if (ret <= 0) goto end;
+				}
+			s->init_num=0;
+			s->state=SSL3_ST_SR_KEY_EXCH_A;
 			break;
 
 		case SSL3_ST_SR_KEY_EXCH_A:
@@ -493,20 +483,14 @@ int ssl3_accept(SSL *s)
 			ret=ssl3_get_client_key_exchange(s);
 			if (ret <= 0)
 				goto end;
-			if (ret == 2)
+			s->state=SSL3_ST_SR_CERT_VRFY_A;
+			s->init_num=0;
+
+			/* TODO(davidben): These two blocks are different
+			 * between SSL and DTLS. Resolve the difference and code
+			 * duplication. */
+			if (SSL_USE_SIGALGS(s))
 				{
-				/* For the ECDH ciphersuites when
-				 * the client sends its ECDH pub key in
-				 * a certificate, the CertificateVerify
-				 * message is not sent.
-				 */
-				s->init_num = 0;
-				s->state = SSL3_ST_SR_CHANGE;
-				}
-			else if (SSL_USE_SIGALGS(s))
-				{
-				s->state=SSL3_ST_SR_CERT_VRFY_A;
-				s->init_num=0;
 				if (!s->session->peer)
 					break;
 				/* For sigalgs freeze the handshake buffer
@@ -525,9 +509,6 @@ int ssl3_accept(SSL *s)
 				{
 				int offset=0;
 				int dgst_num;
-
-				s->state=SSL3_ST_SR_CERT_VRFY_A;
-				s->init_num=0;
 
 				/* We need to get hashes here so if there is
 				 * a client cert, it can be verified
@@ -771,57 +752,11 @@ int ssl3_send_hello_request(SSL *s)
 	return ssl_do_write(s);
 	}
 
-int ssl3_check_client_hello(SSL *s)
-	{
-	int ok;
-	long n;
-
-	/* this function is called when we really expect a Certificate message,
-	 * so permit appropriate message length */
-	n=s->method->ssl_get_message(s,
-		SSL3_ST_SR_CERT_A,
-		SSL3_ST_SR_CERT_B,
-		-1,
-		s->max_cert_list,
-		&ok);
-	if (!ok) return((int)n);
-	s->s3->tmp.reuse_message = 1;
-	if (s->s3->tmp.message_type == SSL3_MT_CLIENT_HELLO)
-		{
-		/* We only allow the client to restart the handshake once per
-		 * negotiation. */
-		if (s->s3->flags & SSL3_FLAGS_SGC_RESTART_DONE)
-			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_check_client_hello, SSL_R_MULTIPLE_SGC_RESTARTS);
-			return -1;
-			}
-		/* Throw away what we have done so far in the current handshake,
-		 * which will now be aborted. (A full SSL_clear would be too much.) */
-#ifndef OPENSSL_NO_DH
-		if (s->s3->tmp.dh != NULL)
-			{
-			DH_free(s->s3->tmp.dh);
-			s->s3->tmp.dh = NULL;
-			}
-#endif
-#ifndef OPENSSL_NO_ECDH
-		if (s->s3->tmp.ecdh != NULL)
-			{
-			EC_KEY_free(s->s3->tmp.ecdh);
-			s->s3->tmp.ecdh = NULL;
-			}
-#endif
-		s->s3->flags |= SSL3_FLAGS_SGC_RESTART_DONE;
-		return 2;
-		}
-	return 1;
-}
-
 int ssl3_get_client_hello(SSL *s)
 	{
 	int i,ok,al=SSL_AD_INTERNAL_ERROR,ret= -1;
 	long n;
-	SSL_CIPHER *c;
+	const SSL_CIPHER *c;
 	STACK_OF(SSL_CIPHER) *ciphers=NULL;
 	struct ssl_early_callback_ctx early_ctx;
 	CBS client_hello;
@@ -1010,8 +945,7 @@ int ssl3_get_client_hello(SSL *s)
 			if (s->ctx->app_verify_cookie_cb != NULL)
 				{
 				if (s->ctx->app_verify_cookie_cb(s,
-						(unsigned char*)CBS_data(&cookie),
-						CBS_len(&cookie)) == 0)
+						CBS_data(&cookie), CBS_len(&cookie)) == 0)
 					{
 					al=SSL_AD_HANDSHAKE_FAILURE;
 					OPENSSL_PUT_ERROR(SSL, ssl3_get_client_hello, SSL_R_COOKIE_MISMATCH);
@@ -1039,13 +973,6 @@ int ssl3_get_client_hello(SSL *s)
 				{
 				s->version = DTLS1_2_VERSION;
 				s->method = DTLSv1_2_server_method();
-				}
-			else if (tls1_suiteb(s))
-				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_get_client_hello, SSL_R_ONLY_DTLS_1_2_ALLOWED_IN_SUITEB_MODE);
-				s->version = s->client_version;
-				al = SSL_AD_PROTOCOL_VERSION;
-				goto f_err;
 				}
 			else if (s->client_version <= DTLS1_VERSION &&
 				!(s->options & SSL_OP_NO_DTLSv1))
@@ -1160,7 +1087,7 @@ int ssl3_get_client_hello(SSL *s)
 
 	if (!s->hit && s->version >= TLS1_VERSION && s->tls_session_secret_cb)
 		{
-		SSL_CIPHER *pref_cipher=NULL;
+		const SSL_CIPHER *pref_cipher=NULL;
 
 		s->session->master_key_length=sizeof(s->session->master_key);
 		if(s->tls_session_secret_cb(s, s->session->master_key, &s->session->master_key_length,
@@ -1717,8 +1644,8 @@ int ssl3_send_server_key_exchange(SSL *s)
 				j=0;
 				for (num=2; num > 0; num--)
 					{
-					EVP_DigestInit_ex(&md_ctx,(num == 2)
-						?s->ctx->md5:s->ctx->sha1, NULL);
+					EVP_DigestInit_ex(&md_ctx,
+						(num == 2) ? EVP_md5() : EVP_sha1(), NULL);
 					EVP_DigestUpdate(&md_ctx,&(s->s3->client_random[0]),SSL3_RANDOM_SIZE);
 					EVP_DigestUpdate(&md_ctx,&(s->s3->server_random[0]),SSL3_RANDOM_SIZE);
 					EVP_DigestUpdate(&md_ctx,d,n);
@@ -1893,13 +1820,12 @@ int ssl3_get_client_key_exchange(SSL *s)
 	unsigned long alg_a;
 	uint8_t *premaster_secret = NULL;
 	size_t premaster_secret_len = 0;
-	int skip_certificate_verify = 0;
 	RSA *rsa=NULL;
 	uint8_t *decrypt_buf = NULL;
 	EVP_PKEY *pkey=NULL;
 #ifndef OPENSSL_NO_DH
 	BIGNUM *pub=NULL;
-	DH *dh_srvr, *dh_clnt = NULL;
+	DH *dh_srvr;
 #endif
 
 #ifndef OPENSSL_NO_ECDH
@@ -1980,8 +1906,7 @@ int ssl3_get_client_key_exchange(SSL *s)
 		}
 
 	/* Depending on the key exchange method, compute |premaster_secret| and
-	 * |premaster_secret_len|. Also, for DH and ECDH, set
-	 * |skip_certificate_verify| as appropriate. */
+	 * |premaster_secret_len|. */
 	if (alg_k & SSL_kRSA)
 		{
 		CBS encrypted_premaster_secret;
@@ -2001,12 +1926,7 @@ int ssl3_get_client_key_exchange(SSL *s)
 			}
 		rsa=pkey->pkey.rsa;
 
-		/* TLS and [incidentally] DTLS{0xFEFF}
-		 *
-		 * TODO(davidben): Should this (and
-		 * ssl3_send_client_key_exchange) include DTLS1_BAD_VER?
-		 * Alternatively, get rid of DTLS1_BAD_VER?
-		 */
+		/* TLS and [incidentally] DTLS{0xFEFF} */
 		if (s->version > SSL3_VERSION)
 			{
 			CBS copy = client_key_exchange;
@@ -2111,36 +2031,6 @@ int ssl3_get_client_key_exchange(SSL *s)
 		version_good = premaster_secret[0] ^ (s->client_version>>8);
 		version_good |= premaster_secret[1] ^ (s->client_version&0xff);
 
-		/* The premaster secret must contain the same version number as
-		 * the ClientHello to detect version rollback attacks
-		 * (strangely, the protocol does not offer such protection for
-		 * DH ciphersuites). However, buggy clients exist that send the
-		 * negotiated protocol version instead if the server does not
-		 * support the requested protocol version. If
-		 * SSL_OP_TLS_ROLLBACK_BUG is set, tolerate such clients. */
-		if (s->options & SSL_OP_TLS_ROLLBACK_BUG)
-			{
-			unsigned char workaround_mask = version_good;
-			unsigned char workaround;
-
-			/* workaround_mask will be 0xff if version_good is
-			 * non-zero (i.e. the version match failed). Otherwise
-			 * it'll be 0x00. */
-			workaround_mask |= workaround_mask >> 4;
-			workaround_mask |= workaround_mask >> 2;
-			workaround_mask |= workaround_mask >> 1;
-			workaround_mask = ~((workaround_mask & 1) - 1);
-
-			workaround = premaster_secret[0] ^ (s->version>>8);
-			workaround |= premaster_secret[1] ^ (s->version&0xff);
-
-			/* If workaround_mask is 0xff (i.e. there was a version
-			 * mismatch) then we copy the value of workaround over
-			 * version_good. */
-			version_good = (workaround & workaround_mask) |
-				       (version_good & ~workaround_mask);
-			}
-
 		/* If any bits in version_good are set then they'll poision
 		 * decrypt_good_mask and cause rand_premaster_secret to be
 		 * used. */
@@ -2174,14 +2064,13 @@ int ssl3_get_client_key_exchange(SSL *s)
 		premaster_secret_len = sizeof(rand_premaster_secret);
 		}
 #ifndef OPENSSL_NO_DH
-	else if (alg_k & (SSL_kEDH|SSL_kDHr|SSL_kDHd))
+	else if (alg_k & SSL_kEDH)
 		{
 		CBS dh_Yc;
-		int idx = -1;
 		int dh_len;
-		EVP_PKEY *skey = NULL;
 
 		if (!CBS_get_u16_length_prefixed(&client_key_exchange, &dh_Yc) ||
+			CBS_len(&dh_Yc) == 0 ||
 			CBS_len(&client_key_exchange) != 0)
 			{
 			OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_DH_PUBLIC_VALUE_LENGTH_IS_WRONG);
@@ -2189,59 +2078,15 @@ int ssl3_get_client_key_exchange(SSL *s)
 			goto f_err;
 			}
 
-		if (alg_k & SSL_kDHr)
-			idx = SSL_PKEY_DH_RSA;
-		else if (alg_k & SSL_kDHd)
-			idx = SSL_PKEY_DH_DSA;
-		if (idx >= 0)
-			{
-			skey = s->cert->pkeys[idx].privatekey;
-			if ((skey == NULL) ||
-				(skey->type != EVP_PKEY_DH) ||
-				(skey->pkey.dh == NULL))
-				{
-				al=SSL_AD_HANDSHAKE_FAILURE;
-				OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_MISSING_RSA_CERTIFICATE);
-				goto f_err;
-				}
-			dh_srvr = skey->pkey.dh;
-			}
-		else if (s->s3->tmp.dh == NULL)
+		if (s->s3->tmp.dh == NULL)
 			{
 			al=SSL_AD_HANDSHAKE_FAILURE;
 			OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_MISSING_TMP_DH_KEY);
 			goto f_err;
 			}
-		else
-			dh_srvr=s->s3->tmp.dh;
+                dh_srvr=s->s3->tmp.dh;
 
-		if (CBS_len(&dh_Yc) == 0)
-			{
-			/* Get pubkey from the client certificate. This is the
-			 * 'implicit' case of ClientDiffieHellman.
-			 *
-			 * TODO(davidben): Either lose this code or fix a bug
-			 * (or get the spec changed): if there is a fixed_dh
-			 * client certificate, per spec, the 'implicit' mode
-			 * MUST be used. This logic will still accept 'explicit'
-			 * mode. */
-			EVP_PKEY *clkey=X509_get_pubkey(s->session->peer);
-			if (clkey)
-				{
-				if (EVP_PKEY_cmp_parameters(clkey, skey) == 1)
-					dh_clnt = EVP_PKEY_get1_DH(clkey);
-				}
-			if (dh_clnt == NULL)
-				{
-				al=SSL_AD_HANDSHAKE_FAILURE;
-				OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_MISSING_TMP_DH_KEY);
-				goto f_err;
-				}
-			EVP_PKEY_free(clkey);
-			pub = dh_clnt->pub_key;
-			}
-		else
-			pub = BN_bin2bn(CBS_data(&dh_Yc), CBS_len(&dh_Yc), NULL);
+		pub = BN_bin2bn(CBS_data(&dh_Yc), CBS_len(&dh_Yc), NULL);
 		if (pub == NULL)
 			{
 			OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_BN_LIB);
@@ -2266,25 +2111,21 @@ int ssl3_get_client_key_exchange(SSL *s)
 
 		DH_free(s->s3->tmp.dh);
 		s->s3->tmp.dh=NULL;
-		if (dh_clnt)
-			DH_free(dh_clnt);
-		else
-			BN_clear_free(pub);
+		BN_clear_free(pub);
 		pub=NULL;
 
 		premaster_secret_len = dh_len;
-		if (dh_clnt)
-			skip_certificate_verify = 1;
 		}
 #endif
 
 #ifndef OPENSSL_NO_ECDH
-	else if (alg_k & (SSL_kEECDH|SSL_kECDHr|SSL_kECDHe))
+	else if (alg_k & SSL_kEECDH)
 		{
 		int field_size = 0, ecdh_len;
 		const EC_KEY   *tkey;
 		const EC_GROUP *group;
 		const BIGNUM *priv_key;
+		CBS ecdh_Yc;
 
 		/* initialize structures for server's ECDH key pair */
 		if ((srvr_ecdh = EC_KEY_new()) == NULL) 
@@ -2293,19 +2134,9 @@ int ssl3_get_client_key_exchange(SSL *s)
 			goto err;
 			}
 
-		/* Let's get server private key and group information */
-		if (alg_k & (SSL_kECDHr|SSL_kECDHe))
-			{ 
-			/* use the certificate */
-			tkey = s->cert->pkeys[SSL_PKEY_ECC].privatekey->pkey.ec;
-			}
-		else
-			{
-			/* use the ephermeral values we saved when
-			 * generating the ServerKeyExchange msg.
-			 */
-			tkey = s->s3->tmp.ecdh;
-			}
+                /* Use the ephermeral values we saved when generating the
+                 * ServerKeyExchange msg. */
+                tkey = s->s3->tmp.ecdh;
 
 		group    = EC_KEY_get0_group(tkey);
 		priv_key = EC_KEY_get0_private_key(tkey);
@@ -2324,72 +2155,28 @@ int ssl3_get_client_key_exchange(SSL *s)
 			goto err;
 			}
 
-		if (CBS_len(&client_key_exchange) == 0)
+		/* Get client's public key from encoded point
+		 * in the ClientKeyExchange message.
+		 */
+		if (!CBS_get_u8_length_prefixed(&client_key_exchange, &ecdh_Yc) ||
+			CBS_len(&client_key_exchange) != 0)
 			{
-			/* Client Publickey was in Client Certificate */
-
-			 if (alg_k & SSL_kEECDH)
-				 {
-				 al=SSL_AD_HANDSHAKE_FAILURE;
-				 OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_MISSING_TMP_ECDH_KEY);
-				 goto f_err;
-				 }
-			if (((clnt_pub_pkey=X509_get_pubkey(s->session->peer))
-			    == NULL) || 
-			    (clnt_pub_pkey->type != EVP_PKEY_EC))
-				{
-				/* XXX: For now, we do not support client
-				 * authentication using ECDH certificates
-				 * so this branch (n == 0L) of the code is
-				 * never executed. When that support is
-				 * added, we ought to ensure the key 
-				 * received in the certificate is 
-				 * authorized for key agreement.
-				 * ECDH_compute_key implicitly checks that
-				 * the two ECDH shares are for the same
-				 * group.
-				 */
-			   	al=SSL_AD_HANDSHAKE_FAILURE;
-			   	OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_UNABLE_TO_DECODE_ECDH_CERTS);
-			   	goto f_err;
-			   	}
-
-			if (EC_POINT_copy(clnt_ecpoint,
-			    EC_KEY_get0_public_key(clnt_pub_pkey->pkey.ec)) == 0)
-				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, ERR_R_EC_LIB);
-				goto err;
-				}
-			/* Skip certificate verify processing */
-			skip_certificate_verify = 1;
+			al = SSL_AD_DECODE_ERROR;
+			OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_DECODE_ERROR);
+			goto f_err;
 			}
-		else
+
+		if ((bn_ctx = BN_CTX_new()) == NULL)
 			{
-			CBS ecdh_Yc;
+			OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, ERR_R_MALLOC_FAILURE);
+			goto err;
+			}
 
-			/* Get client's public key from encoded point
-			 * in the ClientKeyExchange message.
-			 */
-			if (!CBS_get_u8_length_prefixed(&client_key_exchange, &ecdh_Yc) ||
-				CBS_len(&client_key_exchange) != 0)
-				{
-				al = SSL_AD_DECODE_ERROR;
-				OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, SSL_R_DECODE_ERROR);
-				goto f_err;
-				}
-
-			if ((bn_ctx = BN_CTX_new()) == NULL)
-				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, ERR_R_MALLOC_FAILURE);
-				goto err;
-				}
-
-			if (!EC_POINT_oct2point(group, clnt_ecpoint,
-					CBS_data(&ecdh_Yc), CBS_len(&ecdh_Yc), bn_ctx))
-				{
-				OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, ERR_R_EC_LIB);
-				goto err;
-				}
+		if (!EC_POINT_oct2point(group, clnt_ecpoint,
+				CBS_data(&ecdh_Yc), CBS_len(&ecdh_Yc), bn_ctx))
+			{
+			OPENSSL_PUT_ERROR(SSL, ssl3_get_client_key_exchange, ERR_R_EC_LIB);
+			goto err;
 			}
 
 		/* Allocate a buffer for both the secret and the PSK. */
@@ -2484,7 +2271,7 @@ int ssl3_get_client_key_exchange(SSL *s)
 
 	OPENSSL_cleanse(premaster_secret, premaster_secret_len);
 	OPENSSL_free(premaster_secret);
-	return skip_certificate_verify ? 2 : 1;
+	return 1;
 f_err:
 	ssl3_send_alert(s,SSL3_AL_FATAL,al);
 err:
@@ -2607,23 +2394,6 @@ int ssl3_get_cert_verify(SSL *s)
 			}
 		}
 	else
-#ifndef OPENSSL_NO_DSA
-		if (pkey->type == EVP_PKEY_DSA)
-		{
-		if (DSA_verify(pkey->save_type,
-				&(s->s3->tmp.cert_verify_md[MD5_DIGEST_LENGTH]),
-				SHA_DIGEST_LENGTH,
-				CBS_data(&signature), CBS_len(&signature),
-				pkey->pkey.dsa) <= 0)
-			{
-			/* bad signature */
-			al = SSL_AD_DECRYPT_ERROR;
-			OPENSSL_PUT_ERROR(SSL, ssl3_get_cert_verify, SSL_R_BAD_DSA_SIGNATURE);
-			goto f_err;
-			}
-		}
-	else
-#endif
 #ifndef OPENSSL_NO_ECDSA
 		if (pkey->type == EVP_PKEY_EC)
 		{

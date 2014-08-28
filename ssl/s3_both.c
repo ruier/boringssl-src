@@ -183,12 +183,6 @@ int ssl3_send_finished(SSL *s, int a, int b, const char *sender, int slen)
                         s->s3->previous_server_finished_len=i;
                         }
 
-#ifdef OPENSSL_SYS_WIN16
-		/* MSVC 1.5 does not clear the top bytes of the word unless
-		 * I do this.
-		 */
-		l&=0xffff;
-#endif
 		ssl_set_handshake_header(s, SSL3_MT_FINISHED, l);
 		s->state=b;
 		}
@@ -504,27 +498,12 @@ int ssl_cert_type(X509 *x, EVP_PKEY *pkey)
 		{
 		ret=SSL_PKEY_RSA_ENC;
 		}
-	else if (i == EVP_PKEY_DSA)
-		{
-		ret=SSL_PKEY_DSA_SIGN;
-		}
 #ifndef OPENSSL_NO_EC
 	else if (i == EVP_PKEY_EC)
 		{
 		ret = SSL_PKEY_ECC;
 		}	
 #endif
-	else if (x && (i == EVP_PKEY_DH || i == EVP_PKEY_DHX))
-		{
-		/* For DH two cases: DH certificate signed with RSA and
-		 * DH certificate signed with DSA.
-		 */
-		i = X509_certificate_type(x, pk);
-		if (i & EVP_PKS_RSA)
-			ret = SSL_PKEY_DH_RSA;
-		else if (i & EVP_PKS_DSA)
-			ret = SSL_PKEY_DH_DSA;
-		}
 		
 err:
 	if(!pkey) EVP_PKEY_free(pk);
@@ -596,7 +575,7 @@ int ssl3_setup_read_buffer(SSL *s)
 	unsigned char *p;
 	size_t len,align=0,headerlen;
 	
-	if (SSL_version(s) == DTLS1_VERSION || SSL_version(s) == DTLS1_BAD_VER)
+	if (SSL_IS_DTLS(s))
 		headerlen = DTLS1_RT_HEADER_LENGTH;
 	else
 		headerlen = SSL3_RT_HEADER_LENGTH;
@@ -634,7 +613,7 @@ int ssl3_setup_write_buffer(SSL *s)
 	unsigned char *p;
 	size_t len,align=0,headerlen;
 
-	if (SSL_version(s) == DTLS1_VERSION || SSL_version(s) == DTLS1_BAD_VER)
+	if (SSL_IS_DTLS(s))
 		headerlen = DTLS1_RT_HEADER_LENGTH + 1;
 	else
 		headerlen = SSL3_RT_HEADER_LENGTH;
