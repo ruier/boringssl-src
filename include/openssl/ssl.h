@@ -382,6 +382,7 @@ struct ssl_method_st
  *	Peer SHA256 [13]        EXPLICIT OCTET STRING, -- optional SHA256 hash of Peer certifiate
  *	original handshake hash [14] EXPLICIT OCTET STRING, -- optional original handshake hash
  *	tlsext_signed_cert_timestamp_list [15] EXPLICIT OCTET STRING, -- optional signed cert timestamp list extension
+ *	ocsp_response [16] EXPLICIT OCTET STRING, -- optional saved OCSP response from the server
  *	}
  * Look in ssl/ssl_asn1.c for more details
  * I'm using EXPLICIT tags so I can read the damn things using asn1parse :-).
@@ -441,18 +442,22 @@ struct ssl_session_st
 	 * efficient and to implement a maximum cache size. */
 	struct ssl_session_st *prev,*next;
 	char *tlsext_hostname;
-#ifndef OPENSSL_NO_EC
 	size_t tlsext_ecpointformatlist_length;
 	unsigned char *tlsext_ecpointformatlist; /* peer's list */
 	size_t tlsext_ellipticcurvelist_length;
 	uint16_t *tlsext_ellipticcurvelist; /* peer's list */
-#endif /* OPENSSL_NO_EC */
 	/* RFC4507 info */
 	uint8_t *tlsext_tick;	/* Session ticket */
 	size_t tlsext_ticklen;		/* Session ticket length */
 	uint32_t tlsext_tick_lifetime_hint;	/* Session lifetime hint in seconds */
+
 	size_t tlsext_signed_cert_timestamp_list_length;
 	uint8_t *tlsext_signed_cert_timestamp_list; /* Server's list. */
+
+	/* The OCSP response that came with the session. */
+	size_t ocsp_response_length;
+	uint8_t *ocsp_response;
+
 	char peer_sha256_valid;		/* Non-zero if peer_sha256 is valid */
 	unsigned char peer_sha256[SHA256_DIGEST_LENGTH];  /* SHA256 of peer certificate */
 
@@ -964,7 +969,6 @@ struct ssl_ctx_st
 	 * memory and session space. Only effective on the server side. */
 	char retain_only_sha256_of_client_certs;
 
-# ifndef OPENSSL_NO_NEXTPROTONEG
 	/* Next protocol negotiation information */
 	/* (for experimental NPN extension). */
 
@@ -981,7 +985,6 @@ struct ssl_ctx_st
 				    unsigned int inlen,
 				    void *arg);
 	void *next_proto_select_cb_arg;
-# endif
 
 	/* ALPN information
 	 * (we are in the process of transitioning from NPN to ALPN.) */
@@ -1009,13 +1012,11 @@ struct ssl_ctx_st
 
         /* SRTP profiles we are willing to do from RFC 5764 */
 	STACK_OF(SRTP_PROTECTION_PROFILE) *srtp_profiles;
-# ifndef OPENSSL_NO_EC
 	/* EC extension values inherited by SSL structure */
 	size_t tlsext_ecpointformatlist_length;
 	uint8_t *tlsext_ecpointformatlist;
 	size_t tlsext_ellipticcurvelist_length;
 	uint16_t *tlsext_ellipticcurvelist;
-# endif /* OPENSSL_NO_EC */
 
 	/* If true, a client will advertise the Channel ID extension and a
 	 * server will echo it. */
@@ -1029,6 +1030,9 @@ struct ssl_ctx_st
 
 	/* If true, a client will request certificate timestamps. */
 	char signed_cert_timestamps_enabled;
+
+	/* If true, a client will request a stapled OCSP response. */
+	char ocsp_stapling_enabled;
 	};
 
 #endif
@@ -1105,6 +1109,15 @@ OPENSSL_EXPORT int SSL_enable_signed_cert_timestamps(SSL *ssl);
  * client SSL objects created from |ctx|. */
 OPENSSL_EXPORT void SSL_CTX_enable_signed_cert_timestamps(SSL_CTX *ctx);
 
+/* SSL_enable_signed_cert_timestamps causes |ssl| (which must be the client end
+ * of a connection) to request a stapled OCSP response from the server. Returns
+ * 1 on success. */
+OPENSSL_EXPORT int SSL_enable_ocsp_stapling(SSL *ssl);
+
+/* SSL_CTX_enable_ocsp_stapling enables OCSP stapling on all client SSL objects
+ * created from |ctx|. */
+OPENSSL_EXPORT void SSL_CTX_enable_ocsp_stapling(SSL_CTX *ctx);
+
 /* SSL_get0_signed_cert_timestamp_list sets |*out| and |*out_len| to point to
  * |*out_len| bytes of SCT information from the server. This is only valid if
  * |ssl| is a client. The SCT information is a SignedCertificateTimestampList
@@ -1115,7 +1128,13 @@ OPENSSL_EXPORT void SSL_CTX_enable_signed_cert_timestamps(SSL_CTX *ctx);
  * WARNING: the returned data is not guaranteed to be well formed. */
 OPENSSL_EXPORT void SSL_get0_signed_cert_timestamp_list(const SSL *ssl, uint8_t **out, size_t *out_len);
 
-#ifndef OPENSSL_NO_NEXTPROTONEG
+/* SSL_get0_ocsp_response sets |*out| and |*out_len| to point to |*out_len|
+ * bytes of an OCSP response from the server. This is the DER encoding of an
+ * OCSPResponse type as defined in RFC 2560.
+ *
+ * WARNING: the returned data is not guaranteed to be well formed. */
+OPENSSL_EXPORT void SSL_get0_ocsp_response(const SSL *ssl, uint8_t **out, size_t *out_len);
+
 OPENSSL_EXPORT void SSL_CTX_set_next_protos_advertised_cb(SSL_CTX *s,
 					   int (*cb) (SSL *ssl,
 						      const unsigned char **out,
@@ -1129,7 +1148,6 @@ OPENSSL_EXPORT void SSL_CTX_set_next_proto_select_cb(SSL_CTX *s,
 				      void *arg);
 OPENSSL_EXPORT void SSL_get0_next_proto_negotiated(const SSL *s,
 				    const uint8_t **data, unsigned *len);
-#endif
 
 OPENSSL_EXPORT int SSL_select_next_proto(unsigned char **out, unsigned char *outlen,
 			  const unsigned char *in, unsigned int inlen,
@@ -1362,26 +1380,13 @@ struct ssl_st
 	                          1 : prepare 2, allow last ack just after in server callback.
 	                          2 : don't call servername callback, no ack in server hello
 	                       */
-	/* certificate status request info */
-	/* Status type or -1 if no status type */
-	int tlsext_status_type;
-	/* Expect OCSP CertificateStatus message */
-	int tlsext_status_expected;
-	/* OCSP status request only */
-	STACK_OF(OCSP_RESPID) *tlsext_ocsp_ids;
-	X509_EXTENSIONS *tlsext_ocsp_exts;
-	/* OCSP response received or to be sent */
-	uint8_t *tlsext_ocsp_resp;
-	int tlsext_ocsp_resplen;
 
 	/* RFC4507 session ticket expected to be received or sent */
 	int tlsext_ticket_expected;
-#ifndef OPENSSL_NO_EC
 	size_t tlsext_ecpointformatlist_length;
 	uint8_t *tlsext_ecpointformatlist; /* our list */
 	size_t tlsext_ellipticcurvelist_length;
 	uint16_t *tlsext_ellipticcurvelist; /* our list */
-#endif /* OPENSSL_NO_EC */
 
 	/* TLS Session Ticket extension override */
 	TLS_SESSION_TICKET_EXT *tlsext_session_ticket;
@@ -1396,7 +1401,6 @@ struct ssl_st
 
 	SSL_CTX * initial_ctx; /* initial ctx, used to store sessions */
 
-#ifndef OPENSSL_NO_NEXTPROTONEG
 	/* Next protocol negotiation. For the client, this is the protocol that
 	 * we sent in NextProtocol and is set when handling ServerHello
 	 * extensions.
@@ -1406,9 +1410,6 @@ struct ssl_st
 	 * before the Finished message. */
 	uint8_t *next_proto_negotiated;
 	size_t next_proto_negotiated_len;
-#endif
-
-#define session_ctx initial_ctx
 
 	STACK_OF(SRTP_PROTECTION_PROFILE) *srtp_profiles;  /* What we'll do */
 	SRTP_PROTECTION_PROFILE *srtp_profile;            /* What's been chosen */
@@ -1422,6 +1423,11 @@ struct ssl_st
 
 	/* Enable signed certificate time stamps. Currently client only. */
 	char signed_cert_timestamps_enabled;
+
+	/* Enable OCSP stapling. Currently client only.
+	 * TODO(davidben): Add a server-side implementation when it becomes
+	 * necesary. */
+	char ocsp_stapling_enabled;
 
 	/* For a client, this contains the list of supported protocols in wire
 	 * format. */
@@ -1662,13 +1668,6 @@ DECLARE_PEM_rw(SSL_SESSION, SSL_SESSION)
 #define SSL_CTRL_SET_TLSEXT_TICKET_KEYS		59
 #define SSL_CTRL_SET_TLSEXT_STATUS_REQ_CB	63
 #define SSL_CTRL_SET_TLSEXT_STATUS_REQ_CB_ARG	64
-#define SSL_CTRL_SET_TLSEXT_STATUS_REQ_TYPE	65
-#define SSL_CTRL_GET_TLSEXT_STATUS_REQ_EXTS	66
-#define SSL_CTRL_SET_TLSEXT_STATUS_REQ_EXTS	67
-#define SSL_CTRL_GET_TLSEXT_STATUS_REQ_IDS	68
-#define SSL_CTRL_SET_TLSEXT_STATUS_REQ_IDS	69
-#define SSL_CTRL_GET_TLSEXT_STATUS_REQ_OCSP_RESP	70
-#define SSL_CTRL_SET_TLSEXT_STATUS_REQ_OCSP_RESP	71
 
 #define SSL_CTRL_SET_TLSEXT_TICKET_KEY_CB	72
 
@@ -2228,22 +2227,18 @@ OPENSSL_EXPORT void SSL_CTX_set_tmp_rsa_callback(SSL_CTX *ctx,
 OPENSSL_EXPORT void SSL_set_tmp_rsa_callback(SSL *ssl,
 				  RSA *(*cb)(SSL *ssl,int is_export,
 					     int keylength));
-#ifndef OPENSSL_NO_DH
 OPENSSL_EXPORT void SSL_CTX_set_tmp_dh_callback(SSL_CTX *ctx,
 				 DH *(*dh)(SSL *ssl,int is_export,
 					   int keylength));
 OPENSSL_EXPORT void SSL_set_tmp_dh_callback(SSL *ssl,
 				 DH *(*dh)(SSL *ssl,int is_export,
 					   int keylength));
-#endif
-#ifndef OPENSSL_NO_ECDH
 OPENSSL_EXPORT void SSL_CTX_set_tmp_ecdh_callback(SSL_CTX *ctx,
 				 EC_KEY *(*ecdh)(SSL *ssl,int is_export,
 					   int keylength));
 OPENSSL_EXPORT void SSL_set_tmp_ecdh_callback(SSL *ssl,
 				 EC_KEY *(*ecdh)(SSL *ssl,int is_export,
 					   int keylength));
-#endif
 
 OPENSSL_EXPORT const void *SSL_get_current_compression(SSL *s);
 OPENSSL_EXPORT const void *SSL_get_current_expansion(SSL *s);

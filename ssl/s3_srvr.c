@@ -352,7 +352,7 @@ int ssl3_accept(SSL *s)
 				{
 				ret=ssl3_send_server_certificate(s);
 				if (ret <= 0) goto end;
-				if (s->tlsext_status_expected)
+				if (s->s3->tmp.certificate_status_expected)
 					s->state=SSL3_ST_SW_CERT_STATUS_A;
 				else
 					s->state=SSL3_ST_SW_KEY_EXCH_A;
@@ -500,9 +500,7 @@ int ssl3_accept(SSL *s)
 		case SSL3_ST_SR_CHANGE: {
 			char next_proto_neg = 0;
 			char channel_id = 0;
-# if !defined(OPENSSL_NO_NEXTPROTONEG)
 			next_proto_neg = s->s3->next_proto_neg_seen;
-# endif
 			channel_id = s->s3->tlsext_channel_id_valid;
 
 			/* At this point, the next message must be entirely
@@ -521,7 +519,6 @@ int ssl3_accept(SSL *s)
 			break;
 		}
 
-#if !defined(OPENSSL_NO_NEXTPROTONEG)
 		case SSL3_ST_SR_NEXT_PROTO_A:
 		case SSL3_ST_SR_NEXT_PROTO_B:
 			ret=ssl3_get_next_proto(s);
@@ -532,7 +529,6 @@ int ssl3_accept(SSL *s)
 			else
 				s->state=SSL3_ST_SR_FINISHED_A;
 			break;
-#endif
 
 		case SSL3_ST_SR_CHANNEL_ID_A:
 		case SSL3_ST_SR_CHANNEL_ID_B:
@@ -573,6 +569,8 @@ int ssl3_accept(SSL *s)
 			s->init_num=0;
 			break;
 
+#if 0
+		// TODO(davidben): Implement OCSP stapling on the server.
 		case SSL3_ST_SW_CERT_STATUS_A:
 		case SSL3_ST_SW_CERT_STATUS_B:
 			ret=ssl3_send_cert_status(s);
@@ -580,6 +578,7 @@ int ssl3_accept(SSL *s)
 			s->state=SSL3_ST_SW_KEY_EXCH_A;
 			s->init_num=0;
 			break;
+#endif
 
 		case SSL3_ST_SW_CHANGE_A:
 		case SSL3_ST_SW_CHANGE_B:
@@ -1141,16 +1140,6 @@ int ssl3_get_client_hello(SSL *s)
 	 * s->tmp.new_cipher	- the new cipher to use.
 	 */
 
-	/* Handles TLS extensions that we couldn't check earlier */
-	if (s->version >= SSL3_VERSION)
-		{
-		if (ssl_check_clienthello_tlsext_late(s) <= 0)
-			{
-			OPENSSL_PUT_ERROR(SSL, ssl3_get_client_hello, SSL_R_CLIENTHELLO_TLSEXT);
-			goto err;
-			}
-		}
-
 	if (ret < 0) ret=-ret;
 	if (0)
 		{
@@ -1280,16 +1269,12 @@ int ssl3_send_server_key_exchange(SSL *s)
 	int j,num;
 	unsigned char md_buf[MD5_DIGEST_LENGTH+SHA_DIGEST_LENGTH];
 	unsigned int u;
-#ifndef OPENSSL_NO_DH
 	DH *dh=NULL,*dhp;
-#endif
-#ifndef OPENSSL_NO_ECDH
 	EC_KEY *ecdh=NULL, *ecdhp;
 	unsigned char *encodedPoint = NULL;
 	int encodedlen = 0;
 	int curve_id = 0;
 	BN_CTX *bn_ctx = NULL; 
-#endif
 	const char* psk_identity_hint = NULL;
 	size_t psk_identity_hint_len = 0;
 	EVP_PKEY *pkey;
@@ -1326,7 +1311,6 @@ int ssl3_send_server_key_exchange(SSL *s)
 				psk_identity_hint_len = 0;
 			n+=2+psk_identity_hint_len;
 			}
-#ifndef OPENSSL_NO_DH
 		if (alg_k & SSL_kEDH)
 			{
 			dhp=cert->dh_tmp;
@@ -1378,8 +1362,6 @@ int ssl3_send_server_key_exchange(SSL *s)
 			r[2]=dh->pub_key;
 			}
 		else
-#endif
-#ifndef OPENSSL_NO_ECDH
 		if (alg_k & SSL_kEECDH)
 			{
 			const EC_GROUP *group;
@@ -1504,7 +1486,6 @@ int ssl3_send_server_key_exchange(SSL *s)
 			r[3]=NULL;
 			}
 		else
-#endif /* !OPENSSL_NO_ECDH */
 		if (!(alg_k & SSL_kPSK))
 			{
 			al=SSL_AD_HANDSHAKE_FAILURE;
@@ -1561,7 +1542,6 @@ int ssl3_send_server_key_exchange(SSL *s)
 				}
 			}
 
-#ifndef OPENSSL_NO_ECDH
 		if (alg_k & SSL_kEECDH)
 			{
 			/* XXX: For now, we only support named (not generic) curves.
@@ -1585,7 +1565,6 @@ int ssl3_send_server_key_exchange(SSL *s)
 			encodedPoint = NULL;
 			p += encodedlen;
 			}
-#endif /* OPENSSL_NO_ECDH */
 
 		/* not anonymous */
 		if (pkey != NULL)
@@ -1669,10 +1648,8 @@ int ssl3_send_server_key_exchange(SSL *s)
 f_err:
 	ssl3_send_alert(s,SSL3_AL_FATAL,al);
 err:
-#ifndef OPENSSL_NO_ECDH
 	if (encodedPoint != NULL) OPENSSL_free(encodedPoint);
 	BN_CTX_free(bn_ctx);
-#endif
 	EVP_MD_CTX_cleanup(&md_ctx);
 	return(-1);
 	}
@@ -1777,19 +1754,15 @@ int ssl3_get_client_key_exchange(SSL *s)
 	RSA *rsa=NULL;
 	uint8_t *decrypt_buf = NULL;
 	EVP_PKEY *pkey=NULL;
-#ifndef OPENSSL_NO_DH
 	BIGNUM *pub=NULL;
 	DH *dh_srvr;
-#endif
 
-#ifndef OPENSSL_NO_ECDH
 	EC_KEY *srvr_ecdh = NULL;
 	EVP_PKEY *clnt_pub_pkey = NULL;
 	EC_POINT *clnt_ecpoint = NULL;
 	BN_CTX *bn_ctx = NULL;
 	unsigned int psk_len = 0;
 	unsigned char psk[PSK_MAX_PSK_LEN];
-#endif
 
 	n=s->method->ssl_get_message(s,
 		SSL3_ST_SR_KEY_EXCH_A,
@@ -2018,7 +1991,6 @@ int ssl3_get_client_key_exchange(SSL *s)
 
 		premaster_secret_len = sizeof(rand_premaster_secret);
 		}
-#ifndef OPENSSL_NO_DH
 	else if (alg_k & SSL_kEDH)
 		{
 		CBS dh_Yc;
@@ -2071,9 +2043,7 @@ int ssl3_get_client_key_exchange(SSL *s)
 
 		premaster_secret_len = dh_len;
 		}
-#endif
 
-#ifndef OPENSSL_NO_ECDH
 	else if (alg_k & SSL_kEECDH)
 		{
 		int field_size = 0, ecdh_len;
@@ -2168,7 +2138,6 @@ int ssl3_get_client_key_exchange(SSL *s)
 
 		premaster_secret_len = ecdh_len;
 		}
-#endif
 	else if (alg_k & SSL_kPSK)
 		{
 		/* For plain PSK, other_secret is a block of 0s with the same
@@ -2238,13 +2207,11 @@ err:
 		}
 	if (decrypt_buf)
 		OPENSSL_free(decrypt_buf);
-#ifndef OPENSSL_NO_ECDH
 	EVP_PKEY_free(clnt_pub_pkey);
 	EC_POINT_free(clnt_ecpoint);
 	if (srvr_ecdh != NULL) 
 		EC_KEY_free(srvr_ecdh);
 	BN_CTX_free(bn_ctx);
-#endif
 	return(-1);
 	}
 
@@ -2677,6 +2644,7 @@ int ssl3_send_new_session_ticket(SSL *s)
 	return ssl_do_write(s);
 	}
 
+#if 0
 int ssl3_send_cert_status(SSL *s)
 	{
 	if (s->state == SSL3_ST_SW_CERT_STATUS_A)
@@ -2711,8 +2679,8 @@ int ssl3_send_cert_status(SSL *s)
 	/* SSL3_ST_SW_CERT_STATUS_B */
 	return(ssl3_do_write(s,SSL3_RT_HANDSHAKE));
 	}
+#endif
 
-# ifndef OPENSSL_NO_NEXTPROTONEG
 /* ssl3_get_next_proto reads a Next Protocol Negotiation handshake message. It
  * sets the next_proto member in s if found */
 int ssl3_get_next_proto(SSL *s)
@@ -2771,7 +2739,6 @@ int ssl3_get_next_proto(SSL *s)
 
 	return 1;
 	}
-# endif
 
 /* ssl3_get_channel_id reads and verifies a ClientID handshake message. */
 int ssl3_get_channel_id(SSL *s)
