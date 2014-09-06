@@ -311,7 +311,7 @@ static int ssl3_get_record(SSL *s)
 		extra=0;
 	if (extra && !s->s3->init_extra)
 		{
-		/* An application error: SLS_OP_MICROSOFT_BIG_SSLV3_BUFFER
+		/* An application error: SSL_OP_MICROSOFT_BIG_SSLV3_BUFFER
 		 * set after ssl3_setup_buffers() was done */
 		OPENSSL_PUT_ERROR(SSL, ssl3_get_record, ERR_R_INTERNAL_ERROR);
 		return -1;
@@ -760,9 +760,6 @@ static int do_ssl3_write(SSL *s, int type, const unsigned char *buf,
 			if (eivlen <= 1)
 				eivlen = 0;
 			}
-		/* Need explicit part of IV for GCM mode */
-		else if (mode == EVP_CIPH_GCM_MODE)
-			eivlen = EVP_GCM_TLS_EXPLICIT_IV_LEN;
 		else
 			eivlen = 0;
 		}

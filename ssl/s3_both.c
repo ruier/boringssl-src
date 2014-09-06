@@ -168,6 +168,14 @@ int ssl3_send_finished(SSL *s, int a, int b, const char *sender, int slen)
 		memcpy(p, s->s3->tmp.finish_md, i);
 		l=i;
 
+                /* Log the master secret, if logging is enabled. */
+                if (!ssl_ctx_log_master_secret(s->ctx,
+				s->s3->client_random, SSL3_RANDOM_SIZE,
+				s->session->master_key, s->session->master_key_length))
+			{
+			return 0;
+			}
+
                 /* Copy the finished so we can use it for
                    renegotiation checks */
                 if(s->type == SSL_ST_CONNECT)
@@ -688,8 +696,9 @@ int ssl3_setup_write_buffer(SSL *s)
 		len = s->max_send_fragment
 			+ SSL3_RT_SEND_MAX_ENCRYPTED_OVERHEAD
 			+ headerlen + align;
-		if (!(s->options & SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS))
-			len += headerlen + align
+		/* Account for 1/n-1 record splitting. */
+		if (s->mode & SSL_MODE_CBC_RECORD_SPLITTING)
+			len += headerlen + align + 1
 				+ SSL3_RT_SEND_MAX_ENCRYPTED_OVERHEAD;
 
 		if ((p=OPENSSL_malloc(len)) == NULL)

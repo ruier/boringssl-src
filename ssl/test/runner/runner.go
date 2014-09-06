@@ -483,6 +483,18 @@ var testCases = []testCase{
 		shouldFail:    true,
 		expectedError: ":HTTPS_PROXY_REQUEST:",
 	},
+	{
+		name: "SkipCipherVersionCheck",
+		config: Config{
+			CipherSuites: []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			MaxVersion:   VersionTLS11,
+			Bugs: ProtocolBugs{
+				SkipCipherVersionCheck: true,
+			},
+		},
+		shouldFail:    true,
+		expectedError: ":WRONG_CIPHER_RETURNED:",
+	},
 }
 
 func doExchange(test *testCase, config *Config, conn net.Conn, messageLen int) error {
@@ -1311,6 +1323,40 @@ func addVersionNegotiationTests() {
 	}
 }
 
+func addD5BugTests() {
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "D5Bug-NoQuirk-Reject",
+		config: Config{
+			CipherSuites: []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			Bugs: ProtocolBugs{
+				SSL3RSAKeyExchange: true,
+			},
+		},
+		shouldFail:    true,
+		expectedError: ":TLS_RSA_ENCRYPTED_VALUE_LENGTH_IS_WRONG:",
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "D5Bug-Quirk-Normal",
+		config: Config{
+			CipherSuites: []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+		},
+		flags: []string{"-tls-d5-bug"},
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "D5Bug-Quirk-Bug",
+		config: Config{
+			CipherSuites: []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			Bugs: ProtocolBugs{
+				SSL3RSAKeyExchange: true,
+			},
+		},
+		flags: []string{"-tls-d5-bug"},
+	})
+}
+
 func worker(statusChan chan statusMsg, c chan *testCase, buildDir string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -1363,6 +1409,7 @@ func main() {
 	addCBCSplittingTests()
 	addClientAuthTests()
 	addVersionNegotiationTests()
+	addD5BugTests()
 	for _, async := range []bool{false, true} {
 		for _, splitHandshake := range []bool{false, true} {
 			for _, protocol := range []protocol{tls, dtls} {

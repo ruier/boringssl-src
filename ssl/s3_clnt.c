@@ -798,6 +798,7 @@ int ssl3_get_server_hello(SSL *s)
 	CBS server_hello, server_random, session_id;
 	uint16_t server_version, cipher_suite;
 	uint8_t compression_method;
+	unsigned long mask_ssl;
 
 	n=s->method->ssl_get_message(s,
 		SSL3_ST_CR_SRVR_HELLO_A,
@@ -913,10 +914,16 @@ int ssl3_get_server_hello(SSL *s)
 		OPENSSL_PUT_ERROR(SSL, ssl3_get_server_hello, SSL_R_UNKNOWN_CIPHER_RETURNED);
 		goto f_err;
 		}
+	/* ct->mask_ssl was computed from client capabilities. Now
+	 * that the final version is known, compute a new mask_ssl. */
+	if (!SSL_USE_TLS1_2_CIPHERS(s))
+		mask_ssl = SSL_TLSV1_2;
+	else
+		mask_ssl = 0;
 	/* If it is a disabled cipher we didn't send it in client hello,
 	 * so return an error.
 	 */
-	if (c->algorithm_ssl & ct->mask_ssl ||
+	if (c->algorithm_ssl & mask_ssl ||
 		c->algorithm_mkey & ct->mask_k ||
 		c->algorithm_auth & ct->mask_a)
 		{
@@ -2008,6 +2015,13 @@ int ssl3_send_client_key_exchange(SSL *s)
 				goto err;
 				}
 
+			/* Log the premaster secret, if logging is enabled. */
+			if (!ssl_ctx_log_rsa_client_key_exchange(s->ctx,
+					p, n, tmp_buf, sizeof(tmp_buf)))
+				{
+				goto err;
+				}
+
 			/* Fix buf for TLS and beyond */
 			if (s->version > SSL3_VERSION)
 				{
@@ -2229,9 +2243,8 @@ int ssl3_send_client_key_exchange(SSL *s)
 
 			/* Free allocated memory */
 			BN_CTX_free(bn_ctx);
-			if (encodedPoint != NULL) OPENSSL_free(encodedPoint);
-			if (clnt_ecdh != NULL)
-				 EC_KEY_free(clnt_ecdh);
+			OPENSSL_free(encodedPoint);
+			EC_KEY_free(clnt_ecdh);
 			EVP_PKEY_free(srvr_pub_pkey);
 			}
 		else if (!(alg_k & SSL_kPSK) || ((alg_k & SSL_kPSK) && !(alg_a & SSL_aPSK)))

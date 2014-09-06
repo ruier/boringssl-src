@@ -440,6 +440,15 @@ type ProtocolBugs struct {
 	// isn't sent until we receive an application data record
 	// from the peer.
 	ExpectFalseStart bool
+
+	// SSL3RSAKeyExchange causes the client to always send an RSA
+	// ClientKeyExchange message without the two-byte length
+	// prefix, as if it were SSL3.
+	SSL3RSAKeyExchange bool
+
+	// SkipCipherVersionCheck causes the server to negotiate
+	// TLS 1.2 ciphers in earlier versions of TLS.
+	SkipCipherVersionCheck bool
 }
 
 func (c *Config) serverInit() {

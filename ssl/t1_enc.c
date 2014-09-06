@@ -521,11 +521,7 @@ int tls1_change_cipher_state(SSL *s, int which)
 	else
 		{
 		key_len = EVP_CIPHER_key_length(cipher);
-
-		if (EVP_CIPHER_mode(cipher) == EVP_CIPH_GCM_MODE)
-			iv_len = EVP_GCM_TLS_FIXED_IV_LEN;
-		else
-			iv_len = EVP_CIPHER_iv_length(cipher);
+		iv_len = EVP_CIPHER_iv_length(cipher);
 		}
 
 	key_data = s->s3->tmp.key_block;
@@ -617,11 +613,7 @@ int tls1_setup_key_block(SSL *s)
 		if (!ssl_cipher_get_evp(s->session,&c,&hash,&mac_type,&mac_secret_size))
 			goto cipher_unavailable_err;
 		key_len = EVP_CIPHER_key_length(c);
-
-		if (EVP_CIPHER_mode(c) == EVP_CIPH_GCM_MODE)
-			iv_len = EVP_GCM_TLS_FIXED_IV_LEN;
-		else
-			iv_len = EVP_CIPHER_iv_length(c);
+		iv_len = EVP_CIPHER_iv_length(c);
 		}
 
 	s->s3->tmp.new_aead=aead;
@@ -911,11 +903,6 @@ int tls1_enc(SSL *s, int send)
 
 			/* we need to add 'i' padding bytes of value j */
 			j=i-1;
-			if (s->options & SSL_OP_TLS_BLOCK_PADDING_BUG)
-				{
-				if (s->s3->flags & TLS1_FLAGS_TLS_PADDING_BUG)
-					j++;
-				}
 			for (k=(int)l; k<(int)(l+i); k++)
 				rec->input[k]=j;
 			l+=i;
@@ -951,12 +938,6 @@ int tls1_enc(SSL *s, int send)
 						?(i<0)
 						:(i==0))
 			return -1;	/* AEAD can fail to verify MAC */
-		if (EVP_CIPHER_mode(enc) == EVP_CIPH_GCM_MODE && !send)
-			{
-			rec->data += EVP_GCM_TLS_EXPLICIT_IV_LEN;
-			rec->input += EVP_GCM_TLS_EXPLICIT_IV_LEN;
-			rec->length -= EVP_GCM_TLS_EXPLICIT_IV_LEN;
-			}
 
 #ifdef KSSL_DEBUG
 		{

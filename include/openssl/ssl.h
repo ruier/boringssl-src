@@ -471,33 +471,21 @@ struct ssl_session_st
 
 #endif
 
-#define SSL_OP_MICROSOFT_SESS_ID_BUG			0x00000001L
-#define SSL_OP_NETSCAPE_CHALLENGE_BUG			0x00000002L
-/* Allow initial connection to servers that don't support RI */
+/* SSL_OP_LEGACY_SERVER_CONNECT allows initial connection to servers
+ * that don't support RI */
 #define SSL_OP_LEGACY_SERVER_CONNECT			0x00000004L
-#define SSL_OP_SSLREF2_REUSE_CERT_TYPE_BUG		0x00000010L
+
+/* SSL_OP_MICROSOFT_BIG_SSLV3_BUFFER allows for record sizes
+ * SSL3_RT_MAX_EXTRA bytes above the maximum record size. */
 #define SSL_OP_MICROSOFT_BIG_SSLV3_BUFFER		0x00000020L
-#define SSL_OP_SAFARI_ECDHE_ECDSA_BUG			0x00000040L
+
+/* SSL_OP_TLS_D5_BUG accepts an RSAClientKeyExchange in TLS encoded as
+ * SSL3, without a length prefix. */
 #define SSL_OP_TLS_D5_BUG				0x00000100L
-#define SSL_OP_TLS_BLOCK_PADDING_BUG			0x00000200L
 
-/* Hasn't done anything since OpenSSL 0.9.7h, retained for compatibility */
-#define SSL_OP_MSIE_SSLV2_RSA_PADDING			0x0
-
-/* SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS is vestigial. Previously it disabled the
- * insertion of empty records in CBC mode, but the empty records were commonly
- * misinterpreted as EOF by other TLS stacks and so this was disabled by
- * SSL_OP_ALL.
- *
- * This has been replaced by 1/n-1 record splitting, which is enabled by
- * SSL_MODE_CBC_RECORD_SPLITTING in SSL_set_mode. This involves sending a
- * one-byte record rather than an empty record and has much better
- * compatibility. */
-#define SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS              0x00000800L /* added in 0.9.6e */
-
-/* SSL_OP_ALL: various bug workarounds that should be rather harmless.
- *             This used to be 0x000FFFFFL before 0.9.7. */
-#define SSL_OP_ALL					0x80000BFFL
+/* SSL_OP_ALL enables the above bug workarounds that should be rather
+ * harmless. */
+#define SSL_OP_ALL					0x00000BFFL
 
 /* DTLS options */
 #define SSL_OP_NO_QUERY_MTU                 0x00001000L
@@ -688,6 +676,14 @@ OPENSSL_EXPORT void SSL_CTX_set_msg_callback(SSL_CTX *ctx, void (*cb)(int write_
 OPENSSL_EXPORT void SSL_set_msg_callback(SSL *ssl, void (*cb)(int write_p, int version, int content_type, const void *buf, size_t len, SSL *ssl, void *arg));
 #define SSL_CTX_set_msg_callback_arg(ctx, arg) SSL_CTX_ctrl((ctx), SSL_CTRL_SET_MSG_CALLBACK_ARG, 0, (arg))
 #define SSL_set_msg_callback_arg(ssl, arg) SSL_ctrl((ssl), SSL_CTRL_SET_MSG_CALLBACK_ARG, 0, (arg))
+
+/* SSL_CTX_set_keylog_bio sets configures all SSL objects attached to |ctx| to
+ * log session material to |keylog_bio|. This is intended for debugging use with
+ * tools like Wireshark. |ctx| takes ownership of |keylog_bio|.
+ *
+ * The format is described in
+ * https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Key_Log_Format. */
+void SSL_CTX_set_keylog_bio(SSL_CTX *ctx, BIO *keylog_bio);
 
 
 struct ssl_aead_ctx_st;
@@ -1033,6 +1029,11 @@ struct ssl_ctx_st
 
 	/* If true, a client will request a stapled OCSP response. */
 	char ocsp_stapling_enabled;
+
+	/* If not NULL, session key material will be logged to this BIO for
+	 * debugging purposes. The format matches NSS's and is readable by
+	 * Wireshark. */
+	BIO *keylog_bio;
 	};
 
 #endif
@@ -1375,12 +1376,9 @@ struct ssl_st
 					void *arg);
 	void *tlsext_debug_arg;
 	char *tlsext_hostname;
-	int servername_done;   /* no further mod of servername 
-	                          0 : call the servername extension callback.
-	                          1 : prepare 2, allow last ack just after in server callback.
-	                          2 : don't call servername callback, no ack in server hello
-	                       */
-
+	/* should_ack_sni is true if the SNI extension should be acked. This is
+	 * only used by a server. */
+	char should_ack_sni;
 	/* RFC4507 session ticket expected to be received or sent */
 	int tlsext_ticket_expected;
 	size_t tlsext_ecpointformatlist_length;
@@ -2477,6 +2475,8 @@ OPENSSL_EXPORT void ERR_load_SSL_strings(void);
 #define SSL_F_ssl3_expect_change_cipher_spec 282
 #define SSL_F_ssl23_get_v2_client_hello 283
 #define SSL_F_ssl3_cert_verify_hash 284
+#define SSL_F_ssl_ctx_log_rsa_client_key_exchange 285
+#define SSL_F_ssl_ctx_log_master_secret 286
 #define SSL_R_UNABLE_TO_FIND_ECDH_PARAMETERS 100
 #define SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC 101
 #define SSL_R_INVALID_NULL_CMD_NAME 102
