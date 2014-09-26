@@ -172,6 +172,13 @@ SSL3_ENC_METHOD ssl3_undef_enc_method={
 		 int use_context)) ssl_undefined_function,
 	};
 
+/* Some error codes are special. Ensure the make_errors.go script
+ * never regresses this. */
+OPENSSL_COMPILE_ASSERT(
+	SSL_R_TLSV1_ALERT_NO_RENEGOTIATION ==
+		SSL_AD_NO_RENEGOTIATION + SSL_AD_REASON_OFFSET,
+	ssl_alert_reason_code_mismatch);
+
 int SSL_clear(SSL *s)
 	{
 
@@ -1144,11 +1151,8 @@ long SSL_ctrl(SSL *s,int cmd,long larg,void *parg)
 		s->max_cert_list=larg;
 		return(l);
 	case SSL_CTRL_SET_MTU:
-#ifndef OPENSSL_NO_DTLS1
 		if (larg < (long)dtls1_min_mtu())
 			return 0;
-#endif
-
 		if (SSL_IS_DTLS(s))
 			{
 			s->d1->mtu = larg;

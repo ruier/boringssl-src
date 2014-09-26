@@ -76,6 +76,7 @@ const (
 	extensionSupportedCurves     uint16 = 10
 	extensionSupportedPoints     uint16 = 11
 	extensionSignatureAlgorithms uint16 = 13
+	extensionALPN                uint16 = 16
 	extensionSessionTicket       uint16 = 35
 	extensionNextProtoNeg        uint16 = 13172 // not IANA assigned
 	extensionRenegotiationInfo   uint16 = 0xff01
@@ -166,6 +167,7 @@ type ConnectionState struct {
 	CipherSuite                uint16                // cipher suite in use (TLS_RSA_WITH_RC4_128_SHA, ...)
 	NegotiatedProtocol         string                // negotiated next protocol (from Config.NextProtos)
 	NegotiatedProtocolIsMutual bool                  // negotiated protocol was advertised by server
+	NegotiatedProtocolFromALPN bool                  // protocol negotiated with ALPN
 	ServerName                 string                // server name requested by client, if any (server side only)
 	PeerCertificates           []*x509.Certificate   // certificate chain presented by remote peer
 	VerifiedChains             [][]*x509.Certificate // verified chains built from PeerCertificates
@@ -449,6 +451,19 @@ type ProtocolBugs struct {
 	// SkipCipherVersionCheck causes the server to negotiate
 	// TLS 1.2 ciphers in earlier versions of TLS.
 	SkipCipherVersionCheck bool
+
+	// ExpectServerName, if not empty, is the hostname the client
+	// must specify in the server_name extension.
+	ExpectServerName string
+
+	// SwapNPNAndALPN switches the relative order between NPN and
+	// ALPN on the server. This is to test that server preference
+	// of ALPN works regardless of their relative order.
+	SwapNPNAndALPN bool
+
+	// AllowSessionVersionMismatch causes the server to resume sessions
+	// regardless of the version associated with the session.
+	AllowSessionVersionMismatch bool
 }
 
 func (c *Config) serverInit() {

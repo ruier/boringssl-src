@@ -522,13 +522,13 @@ struct ssl_session_st
 #define SSL_OP_NO_SSL_MASK (SSL_OP_NO_SSLv2|SSL_OP_NO_SSLv3|\
 	SSL_OP_NO_TLSv1|SSL_OP_NO_TLSv1_1|SSL_OP_NO_TLSv1_2)
 
-/* These next two were never actually used for anything since SSLeay
- * zap so we have some more flags.
- */
-/* The next flag deliberately changes the ciphertest, this is a check
- * for the PKCS#1 attack */
-#define SSL_OP_PKCS1_CHECK_1				0x0
-#define SSL_OP_PKCS1_CHECK_2				0x0
+/* The following flags do nothing and are included only to make it easier to
+ * compile code with BoringSSL. */
+#define SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS		0
+#define SSL_OP_MICROSOFT_SESS_ID_BUG			0
+#define SSL_OP_NETSCAPE_CHALLENGE_BUG			0
+#define SSL_OP_SSLREF2_REUSE_CERT_TYPE_BUG		0
+#define SSL_OP_TLS_BLOCK_PADDING_BUG			0
 
 /* Allow SSL_write(..., n) to return r with 0 < r < n (i.e. report success
  * when just a single record has been written): */
@@ -783,7 +783,7 @@ DECLARE_LHASH_OF(SSL_SESSION);
 struct ssl_cipher_preference_list_st
 	{
 	STACK_OF(SSL_CIPHER) *ciphers;
-	unsigned char *in_group_flags;
+	uint8_t *in_group_flags;
 	};
 
 struct ssl_ctx_st
@@ -2790,6 +2790,7 @@ OPENSSL_EXPORT void ERR_load_SSL_strings(void);
 #define SSL_R_UNPROCESSED_HANDSHAKE_DATA 440
 #define SSL_R_HANDSHAKE_RECORD_BEFORE_CCS 441
 #define SSL_R_SESSION_MAY_NOT_BE_CREATED 442
+#define SSL_R_SSLV3_ALERT_CLOSE_NOTIFY 1000
 #define SSL_R_SSLV3_ALERT_UNEXPECTED_MESSAGE 1010
 #define SSL_R_SSLV3_ALERT_BAD_RECORD_MAC 1020
 #define SSL_R_TLSV1_ALERT_DECRYPTION_FAILED 1021
@@ -2811,6 +2812,7 @@ OPENSSL_EXPORT void ERR_load_SSL_strings(void);
 #define SSL_R_TLSV1_ALERT_PROTOCOL_VERSION 1070
 #define SSL_R_TLSV1_ALERT_INSUFFICIENT_SECURITY 1071
 #define SSL_R_TLSV1_ALERT_INTERNAL_ERROR 1080
+#define SSL_R_TLSV1_ALERT_INAPPROPRIATE_FALLBACK 1086
 #define SSL_R_TLSV1_ALERT_USER_CANCELLED 1090
 #define SSL_R_TLSV1_ALERT_NO_RENEGOTIATION 1100
 #define SSL_R_TLSV1_UNSUPPORTED_EXTENSION 1110

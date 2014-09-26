@@ -359,14 +359,9 @@
 /*
  * Cipher strength information.
  */
-#define SSL_EXP_MASK		0x00000003L
-#define SSL_STRONG_MASK		0x000001fcL
-
-#define SSL_NOT_EXP		0x00000001L
-
-#define SSL_MEDIUM		0x00000040L
-#define SSL_HIGH		0x00000080L
-#define SSL_FIPS		0x00000100L
+#define SSL_MEDIUM		0x00000001L
+#define SSL_HIGH		0x00000002L
+#define SSL_FIPS		0x00000004L
 
 /* we have used 000001ff - 23 bits left to go */
 
@@ -850,7 +845,6 @@ int ssl_cert_type(X509 *x,EVP_PKEY *pkey);
 void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher);
 STACK_OF(SSL_CIPHER) *ssl_get_ciphers_by_id(SSL *s);
 int ssl_verify_alarm_type(long type);
-void ssl_load_ciphers(void);
 int ssl_fill_hello_random(SSL *s, int server, unsigned char *field, int len);
 
 const SSL_CIPHER *ssl3_get_cipher_by_value(uint16_t value);

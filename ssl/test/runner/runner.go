@@ -97,6 +97,11 @@ const (
 	dtls
 )
 
+const (
+	alpn = 1
+	npn  = 2
+)
+
 type testCase struct {
 	testType      testType
 	protocol      protocol
@@ -110,9 +115,18 @@ type testCase struct {
 	// expectedVersion, if non-zero, specifies the TLS version that must be
 	// negotiated.
 	expectedVersion uint16
+	// expectedResumeVersion, if non-zero, specifies the TLS version that
+	// must be negotiated on resumption. If zero, expectedVersion is used.
+	expectedResumeVersion uint16
 	// expectChannelID controls whether the connection should have
 	// negotiated a Channel ID with channelIDKey.
 	expectChannelID bool
+	// expectedNextProto controls whether the connection should
+	// negotiate a next protocol via NPN or ALPN.
+	expectedNextProto string
+	// expectedNextProtoType, if non-zero, is the expected next
+	// protocol negotiation mechanism.
+	expectedNextProtoType int
 	// messageLen is the length, in bytes, of the test message that will be
 	// sent.
 	messageLen int
@@ -121,8 +135,13 @@ type testCase struct {
 	// keyFile is the path to the private key to use for the server.
 	keyFile string
 	// resumeSession controls whether a second connection should be tested
-	// which resumes the first session.
+	// which attempts to resume the first session.
 	resumeSession bool
+	// resumeConfig, if not nil, points to a Config to be used on
+	// resumption. SessionTicketKey and ClientSessionCache are copied from
+	// the initial connection's config. If nil, the initial connection's
+	// config is used.
+	resumeConfig *Config
 	// sendPrefix sends a prefix on the socket before actually performing a
 	// handshake.
 	sendPrefix string
@@ -200,36 +219,6 @@ var testCases = []testCase{
 			},
 		},
 		flags: []string{"-fallback-scsv"},
-	},
-	{
-		testType: serverTest,
-		name:     "ServerNameExtension",
-		config: Config{
-			ServerName: "example.com",
-		},
-		flags: []string{"-expect-server-name", "example.com"},
-	},
-	{
-		testType: clientTest,
-		name:     "DuplicateExtensionClient",
-		config: Config{
-			Bugs: ProtocolBugs{
-				DuplicateExtension: true,
-			},
-		},
-		shouldFail:         true,
-		expectedLocalError: "remote error: error decoding message",
-	},
-	{
-		testType: serverTest,
-		name:     "DuplicateExtensionServer",
-		config: Config{
-			Bugs: ProtocolBugs{
-				DuplicateExtension: true,
-			},
-		},
-		shouldFail:         true,
-		expectedLocalError: "remote error: error decoding message",
 	},
 	{
 		name: "ClientCertificateTypes",
@@ -497,7 +486,7 @@ var testCases = []testCase{
 	},
 }
 
-func doExchange(test *testCase, config *Config, conn net.Conn, messageLen int) error {
+func doExchange(test *testCase, config *Config, conn net.Conn, messageLen int, isResume bool) error {
 	if test.protocol == dtls {
 		conn = newPacketAdaptor(conn)
 	}
@@ -528,8 +517,15 @@ func doExchange(test *testCase, config *Config, conn net.Conn, messageLen int) e
 		return err
 	}
 
-	if vers := tlsConn.ConnectionState().Version; test.expectedVersion != 0 && vers != test.expectedVersion {
-		return fmt.Errorf("got version %x, expected %x", vers, test.expectedVersion)
+	// TODO(davidben): move all per-connection expectations into a dedicated
+	// expectations struct that can be specified separately for the two
+	// legs.
+	expectedVersion := test.expectedVersion
+	if isResume && test.expectedResumeVersion != 0 {
+		expectedVersion = test.expectedResumeVersion
+	}
+	if vers := tlsConn.ConnectionState().Version; expectedVersion != 0 && vers != expectedVersion {
+		return fmt.Errorf("got version %x, expected %x", vers, expectedVersion)
 	}
 
 	if test.expectChannelID {
@@ -541,6 +537,18 @@ func doExchange(test *testCase, config *Config, conn net.Conn, messageLen int) e
 			channelIDKey.X.Cmp(channelIDKey.X) != 0 ||
 			channelIDKey.Y.Cmp(channelIDKey.Y) != 0 {
 			return fmt.Errorf("incorrect channel ID")
+		}
+	}
+
+	if expected := test.expectedNextProto; expected != "" {
+		if actual := tlsConn.ConnectionState().NegotiatedProtocol; actual != expected {
+			return fmt.Errorf("next proto mismatch: got %s, wanted %s", actual, expected)
+		}
+	}
+
+	if test.expectedNextProtoType != 0 {
+		if (test.expectedNextProtoType == alpn) != tlsConn.ConnectionState().NegotiatedProtocolFromALPN {
+			return fmt.Errorf("next proto type mismatch")
 		}
 	}
 
@@ -705,12 +713,25 @@ func runTest(test *testCase, buildDir string) error {
 		}
 	}
 
-	err := doExchange(test, &config, conn, test.messageLen)
+	err := doExchange(test, &config, conn, test.messageLen,
+		false /* not a resumption */)
 	conn.Close()
 	if err == nil && test.resumeSession {
-		err = doExchange(test, &config, connResume, test.messageLen)
-		connResume.Close()
+		var resumeConfig Config
+		if test.resumeConfig != nil {
+			resumeConfig = *test.resumeConfig
+			if len(resumeConfig.Certificates) == 0 {
+				resumeConfig.Certificates = []Certificate{getRSACertificate()}
+			}
+			resumeConfig.SessionTicketKey = config.SessionTicketKey
+			resumeConfig.ClientSessionCache = config.ClientSessionCache
+		} else {
+			resumeConfig = config
+		}
+		err = doExchange(test, &resumeConfig, connResume, test.messageLen,
+			true /* resumption */)
 	}
+	connResume.Close()
 
 	childErr := shim.Wait()
 
@@ -1159,13 +1180,14 @@ func addStateMachineCoverageTests(async, splitHandshake bool, protocol protocol)
 			protocol: protocol,
 			name:     "NPN-Client" + suffix,
 			config: Config{
-				CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
-				NextProtos:   []string{"foo"},
+				NextProtos: []string{"foo"},
 				Bugs: ProtocolBugs{
 					MaxHandshakeRecordLength: maxHandshakeRecordLength,
 				},
 			},
-			flags: append(flags, "-select-next-proto", "foo"),
+			flags:                 append(flags, "-select-next-proto", "foo"),
+			expectedNextProto:     "foo",
+			expectedNextProtoType: npn,
 		})
 		testCases = append(testCases, testCase{
 			protocol: protocol,
@@ -1180,6 +1202,8 @@ func addStateMachineCoverageTests(async, splitHandshake bool, protocol protocol)
 			flags: append(flags,
 				"-advertise-npn", "\x03foo\x03bar\x03baz",
 				"-expect-next-proto", "bar"),
+			expectedNextProto:     "bar",
+			expectedNextProtoType: npn,
 		})
 
 		// Client does False Start and negotiates NPN.
@@ -1197,6 +1221,25 @@ func addStateMachineCoverageTests(async, splitHandshake bool, protocol protocol)
 			flags: append(flags,
 				"-false-start",
 				"-select-next-proto", "foo"),
+			shimWritesFirst: true,
+			resumeSession:   true,
+		})
+
+		// Client does False Start and negotiates ALPN.
+		testCases = append(testCases, testCase{
+			protocol: protocol,
+			name:     "FalseStart-ALPN" + suffix,
+			config: Config{
+				CipherSuites: []uint16{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
+				NextProtos:   []string{"foo"},
+				Bugs: ProtocolBugs{
+					ExpectFalseStart:         true,
+					MaxHandshakeRecordLength: maxHandshakeRecordLength,
+				},
+			},
+			flags: append(flags,
+				"-false-start",
+				"-advertise-alpn", "\x03foo"),
 			shimWritesFirst: true,
 			resumeSession:   true,
 		})
@@ -1372,6 +1415,197 @@ func addD5BugTests() {
 	})
 }
 
+func addExtensionTests() {
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "DuplicateExtensionClient",
+		config: Config{
+			Bugs: ProtocolBugs{
+				DuplicateExtension: true,
+			},
+		},
+		shouldFail:         true,
+		expectedLocalError: "remote error: error decoding message",
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "DuplicateExtensionServer",
+		config: Config{
+			Bugs: ProtocolBugs{
+				DuplicateExtension: true,
+			},
+		},
+		shouldFail:         true,
+		expectedLocalError: "remote error: error decoding message",
+	})
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "ServerNameExtensionClient",
+		config: Config{
+			Bugs: ProtocolBugs{
+				ExpectServerName: "example.com",
+			},
+		},
+		flags: []string{"-host-name", "example.com"},
+	})
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "ServerNameExtensionClient",
+		config: Config{
+			Bugs: ProtocolBugs{
+				ExpectServerName: "mismatch.com",
+			},
+		},
+		flags:              []string{"-host-name", "example.com"},
+		shouldFail:         true,
+		expectedLocalError: "tls: unexpected server name",
+	})
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "ServerNameExtensionClient",
+		config: Config{
+			Bugs: ProtocolBugs{
+				ExpectServerName: "missing.com",
+			},
+		},
+		shouldFail:         true,
+		expectedLocalError: "tls: unexpected server name",
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "ServerNameExtensionServer",
+		config: Config{
+			ServerName: "example.com",
+		},
+		flags:         []string{"-expect-server-name", "example.com"},
+		resumeSession: true,
+	})
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "ALPNClient",
+		config: Config{
+			NextProtos: []string{"foo"},
+		},
+		flags: []string{
+			"-advertise-alpn", "\x03foo\x03bar\x03baz",
+			"-expect-alpn", "foo",
+		},
+		expectedNextProto:     "foo",
+		expectedNextProtoType: alpn,
+		resumeSession:         true,
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "ALPNServer",
+		config: Config{
+			NextProtos: []string{"foo", "bar", "baz"},
+		},
+		flags: []string{
+			"-expect-advertised-alpn", "\x03foo\x03bar\x03baz",
+			"-select-alpn", "foo",
+		},
+		expectedNextProto:     "foo",
+		expectedNextProtoType: alpn,
+		resumeSession:         true,
+	})
+	// Test that the server prefers ALPN over NPN.
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "ALPNServer-Preferred",
+		config: Config{
+			NextProtos: []string{"foo", "bar", "baz"},
+		},
+		flags: []string{
+			"-expect-advertised-alpn", "\x03foo\x03bar\x03baz",
+			"-select-alpn", "foo",
+			"-advertise-npn", "\x03foo\x03bar\x03baz",
+		},
+		expectedNextProto:     "foo",
+		expectedNextProtoType: alpn,
+		resumeSession:         true,
+	})
+	testCases = append(testCases, testCase{
+		testType: serverTest,
+		name:     "ALPNServer-Preferred-Swapped",
+		config: Config{
+			NextProtos: []string{"foo", "bar", "baz"},
+			Bugs: ProtocolBugs{
+				SwapNPNAndALPN: true,
+			},
+		},
+		flags: []string{
+			"-expect-advertised-alpn", "\x03foo\x03bar\x03baz",
+			"-select-alpn", "foo",
+			"-advertise-npn", "\x03foo\x03bar\x03baz",
+		},
+		expectedNextProto:     "foo",
+		expectedNextProtoType: alpn,
+		resumeSession:         true,
+	})
+}
+
+func addResumptionVersionTests() {
+	// TODO(davidben): Once DTLS 1.2 is working, test that as well.
+	for _, sessionVers := range tlsVersions {
+		// TODO(davidben): SSLv3 is omitted here because runner does not
+		// support resumption with session IDs.
+		if sessionVers.version == VersionSSL30 {
+			continue
+		}
+		for _, resumeVers := range tlsVersions {
+			if resumeVers.version == VersionSSL30 {
+				continue
+			}
+			suffix := "-" + sessionVers.name + "-" + resumeVers.name
+
+			// TODO(davidben): Write equivalent tests for the server
+			// and clean up the server's logic. This requires being
+			// able to give the shim a different set of SSL_OP_NO_*
+			// flags between the initial connection and the
+			// resume. Perhaps resumption should be tested by
+			// serializing the SSL_SESSION and starting a second
+			// shim.
+			testCases = append(testCases, testCase{
+				name:          "Resume-Client" + suffix,
+				resumeSession: true,
+				config: Config{
+					MaxVersion:   sessionVers.version,
+					CipherSuites: []uint16{TLS_RSA_WITH_RC4_128_SHA},
+					Bugs: ProtocolBugs{
+						AllowSessionVersionMismatch: true,
+					},
+				},
+				expectedVersion: sessionVers.version,
+				resumeConfig: &Config{
+					MaxVersion:   resumeVers.version,
+					CipherSuites: []uint16{TLS_RSA_WITH_RC4_128_SHA},
+					Bugs: ProtocolBugs{
+						AllowSessionVersionMismatch: true,
+					},
+				},
+				expectedResumeVersion: resumeVers.version,
+			})
+
+			testCases = append(testCases, testCase{
+				name:          "Resume-Client-NoResume" + suffix,
+				flags:         []string{"-expect-session-miss"},
+				resumeSession: true,
+				config: Config{
+					MaxVersion:   sessionVers.version,
+					CipherSuites: []uint16{TLS_RSA_WITH_RC4_128_SHA},
+				},
+				expectedVersion: sessionVers.version,
+				resumeConfig: &Config{
+					MaxVersion:             resumeVers.version,
+					CipherSuites:           []uint16{TLS_RSA_WITH_RC4_128_SHA},
+					SessionTicketsDisabled: true,
+				},
+				expectedResumeVersion: resumeVers.version,
+			})
+		}
+	}
+}
+
 func worker(statusChan chan statusMsg, c chan *testCase, buildDir string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -1425,6 +1659,8 @@ func main() {
 	addClientAuthTests()
 	addVersionNegotiationTests()
 	addD5BugTests()
+	addExtensionTests()
+	addResumptionVersionTests()
 	for _, async := range []bool{false, true} {
 		for _, splitHandshake := range []bool{false, true} {
 			for _, protocol := range []protocol{tls, dtls} {

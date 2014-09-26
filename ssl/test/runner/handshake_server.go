@@ -220,13 +220,22 @@ Curves:
 	if len(hs.clientHello.serverName) > 0 {
 		c.serverName = hs.clientHello.serverName
 	}
-	// Although sending an empty NPN extension is reasonable, Firefox has
-	// had a bug around this. Best to send nothing at all if
-	// config.NextProtos is empty. See
-	// https://code.google.com/p/go/issues/detail?id=5445.
-	if hs.clientHello.nextProtoNeg && len(config.NextProtos) > 0 {
-		hs.hello.nextProtoNeg = true
-		hs.hello.nextProtos = config.NextProtos
+
+	if len(hs.clientHello.alpnProtocols) > 0 {
+		if selectedProto, fallback := mutualProtocol(hs.clientHello.alpnProtocols, c.config.NextProtos); !fallback {
+			hs.hello.alpnProtocol = selectedProto
+			c.clientProtocol = selectedProto
+			c.usedALPN = true
+		}
+	} else {
+		// Although sending an empty NPN extension is reasonable, Firefox has
+		// had a bug around this. Best to send nothing at all if
+		// config.NextProtos is empty. See
+		// https://code.google.com/p/go/issues/detail?id=5445.
+		if hs.clientHello.nextProtoNeg && len(config.NextProtos) > 0 {
+			hs.hello.nextProtoNeg = true
+			hs.hello.nextProtos = config.NextProtos
+		}
 	}
 
 	if len(config.Certificates) == 0 {
@@ -236,6 +245,9 @@ Curves:
 	hs.cert = &config.Certificates[0]
 	if len(hs.clientHello.serverName) > 0 {
 		hs.cert = config.getCertificateForName(hs.clientHello.serverName)
+	}
+	if expected := c.config.Bugs.ExpectServerName; expected != "" && expected != hs.clientHello.serverName {
+		return false, errors.New("tls: unexpected server name")
 	}
 
 	if hs.clientHello.channelIDSupported && config.RequestChannelID {
@@ -290,16 +302,22 @@ Curves:
 func (hs *serverHandshakeState) checkForResumption() bool {
 	c := hs.c
 
+	if c.config.SessionTicketsDisabled {
+		return false
+	}
+
 	var ok bool
 	if hs.sessionState, ok = c.decryptTicket(hs.clientHello.sessionTicket); !ok {
 		return false
 	}
 
-	if hs.sessionState.vers > hs.clientHello.vers {
-		return false
-	}
-	if vers, ok := c.config.mutualVersion(hs.sessionState.vers); !ok || vers != hs.sessionState.vers {
-		return false
+	if !c.config.Bugs.AllowSessionVersionMismatch {
+		if hs.sessionState.vers > hs.clientHello.vers {
+			return false
+		}
+		if vers, ok := c.config.mutualVersion(hs.sessionState.vers); !ok || vers != hs.sessionState.vers {
+			return false
+		}
 	}
 
 	cipherSuiteOk := false
