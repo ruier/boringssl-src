@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/subtle"
 	"crypto/x509"
@@ -15,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 )
 
 // serverHandshakeState contains details of a server handshake in progress.
@@ -69,7 +71,7 @@ func (c *Conn) serverHandshake() error {
 		if err := hs.sendFinished(); err != nil {
 			return err
 		}
-		if err := hs.readFinished(); err != nil {
+		if err := hs.readFinished(isResume); err != nil {
 			return err
 		}
 		c.didResume = true
@@ -82,8 +84,13 @@ func (c *Conn) serverHandshake() error {
 		if err := hs.establishKeys(); err != nil {
 			return err
 		}
-		if err := hs.readFinished(); err != nil {
+		if err := hs.readFinished(isResume); err != nil {
 			return err
+		}
+		if c.config.Bugs.ExpectFalseStart {
+			if err := c.readRecord(recordTypeApplicationData); err != nil {
+				return err
+			}
 		}
 		if err := hs.sendSessionTicket(); err != nil {
 			return err
@@ -213,13 +220,22 @@ Curves:
 	if len(hs.clientHello.serverName) > 0 {
 		c.serverName = hs.clientHello.serverName
 	}
-	// Although sending an empty NPN extension is reasonable, Firefox has
-	// had a bug around this. Best to send nothing at all if
-	// config.NextProtos is empty. See
-	// https://code.google.com/p/go/issues/detail?id=5445.
-	if hs.clientHello.nextProtoNeg && len(config.NextProtos) > 0 {
-		hs.hello.nextProtoNeg = true
-		hs.hello.nextProtos = config.NextProtos
+
+	if len(hs.clientHello.alpnProtocols) > 0 {
+		if selectedProto, fallback := mutualProtocol(hs.clientHello.alpnProtocols, c.config.NextProtos); !fallback {
+			hs.hello.alpnProtocol = selectedProto
+			c.clientProtocol = selectedProto
+			c.usedALPN = true
+		}
+	} else {
+		// Although sending an empty NPN extension is reasonable, Firefox has
+		// had a bug around this. Best to send nothing at all if
+		// config.NextProtos is empty. See
+		// https://code.google.com/p/go/issues/detail?id=5445.
+		if hs.clientHello.nextProtoNeg && len(config.NextProtos) > 0 {
+			hs.hello.nextProtoNeg = true
+			hs.hello.nextProtos = config.NextProtos
+		}
 	}
 
 	if len(config.Certificates) == 0 {
@@ -229,6 +245,13 @@ Curves:
 	hs.cert = &config.Certificates[0]
 	if len(hs.clientHello.serverName) > 0 {
 		hs.cert = config.getCertificateForName(hs.clientHello.serverName)
+	}
+	if expected := c.config.Bugs.ExpectServerName; expected != "" && expected != hs.clientHello.serverName {
+		return false, errors.New("tls: unexpected server name")
+	}
+
+	if hs.clientHello.channelIDSupported && config.RequestChannelID {
+		hs.hello.channelIDRequested = true
 	}
 
 	_, hs.ecdsaOk = hs.cert.PrivateKey.(*ecdsa.PrivateKey)
@@ -279,16 +302,22 @@ Curves:
 func (hs *serverHandshakeState) checkForResumption() bool {
 	c := hs.c
 
+	if c.config.SessionTicketsDisabled {
+		return false
+	}
+
 	var ok bool
 	if hs.sessionState, ok = c.decryptTicket(hs.clientHello.sessionTicket); !ok {
 		return false
 	}
 
-	if hs.sessionState.vers > hs.clientHello.vers {
-		return false
-	}
-	if vers, ok := c.config.mutualVersion(hs.sessionState.vers); !ok || vers != hs.sessionState.vers {
-		return false
+	if !c.config.Bugs.AllowSessionVersionMismatch {
+		if hs.sessionState.vers > hs.clientHello.vers {
+			return false
+		}
+		if vers, ok := c.config.mutualVersion(hs.sessionState.vers); !ok || vers != hs.sessionState.vers {
+			return false
+		}
 	}
 
 	cipherSuiteOk := false
@@ -331,6 +360,7 @@ func (hs *serverHandshakeState) doResumeHandshake() error {
 	hs.hello.ticketSupported = c.config.Bugs.RenewTicketOnResume
 
 	hs.finishedHash = newFinishedHash(c.vers, hs.suite)
+	hs.finishedHash.discardHandshakeBuffer()
 	hs.writeClientHash(hs.clientHello.marshal())
 	hs.writeServerHash(hs.hello.marshal())
 
@@ -467,6 +497,13 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 	}
 	hs.writeClientHash(ckx.marshal())
 
+	preMasterSecret, err := keyAgreement.processClientKeyExchange(config, hs.cert, ckx, c.vers)
+	if err != nil {
+		c.sendAlert(alertHandshakeFailure)
+		return err
+	}
+	hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.clientHello.random, hs.hello.random)
+
 	// If we received a client cert in response to our certificate request message,
 	// the client will send us a certificateVerifyMsg immediately after the
 	// clientKeyExchangeMsg.  This message is a digest of all preceding
@@ -515,7 +552,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 				break
 			}
 			var digest []byte
-			digest, _, err = hs.finishedHash.hashForClientCertificate(signatureAndHash)
+			digest, _, err = hs.finishedHash.hashForClientCertificate(signatureAndHash, hs.masterSecret)
 			if err != nil {
 				break
 			}
@@ -530,7 +567,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 			}
 			var digest []byte
 			var hashFunc crypto.Hash
-			digest, hashFunc, err = hs.finishedHash.hashForClientCertificate(signatureAndHash)
+			digest, hashFunc, err = hs.finishedHash.hashForClientCertificate(signatureAndHash, hs.masterSecret)
 			if err != nil {
 				break
 			}
@@ -544,12 +581,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		hs.writeClientHash(certVerify.marshal())
 	}
 
-	preMasterSecret, err := keyAgreement.processClientKeyExchange(config, hs.cert, ckx, c.vers)
-	if err != nil {
-		c.sendAlert(alertHandshakeFailure)
-		return err
-	}
-	hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.clientHello.random, hs.hello.random)
+	hs.finishedHash.discardHandshakeBuffer()
 
 	return nil
 }
@@ -579,7 +611,7 @@ func (hs *serverHandshakeState) establishKeys() error {
 	return nil
 }
 
-func (hs *serverHandshakeState) readFinished() error {
+func (hs *serverHandshakeState) readFinished(isResume bool) error {
 	c := hs.c
 
 	c.readRecord(recordTypeChangeCipherSpec)
@@ -599,6 +631,36 @@ func (hs *serverHandshakeState) readFinished() error {
 		}
 		hs.writeClientHash(nextProto.marshal())
 		c.clientProtocol = nextProto.proto
+	}
+
+	if hs.hello.channelIDRequested {
+		msg, err := c.readHandshake()
+		if err != nil {
+			return err
+		}
+		encryptedExtensions, ok := msg.(*encryptedExtensionsMsg)
+		if !ok {
+			c.sendAlert(alertUnexpectedMessage)
+			return unexpectedMessageError(encryptedExtensions, msg)
+		}
+		x := new(big.Int).SetBytes(encryptedExtensions.channelID[0:32])
+		y := new(big.Int).SetBytes(encryptedExtensions.channelID[32:64])
+		r := new(big.Int).SetBytes(encryptedExtensions.channelID[64:96])
+		s := new(big.Int).SetBytes(encryptedExtensions.channelID[96:128])
+		if !elliptic.P256().IsOnCurve(x, y) {
+			return errors.New("tls: invalid channel ID public key")
+		}
+		channelID := &ecdsa.PublicKey{elliptic.P256(), x, y}
+		var resumeHash []byte
+		if isResume {
+			resumeHash = hs.sessionState.handshakeHash
+		}
+		if !ecdsa.Verify(channelID, hs.finishedHash.hashForChannelID(resumeHash), r, s) {
+			return errors.New("tls: invalid channel ID signature")
+		}
+		c.channelID = channelID
+
+		hs.writeClientHash(encryptedExtensions.marshal())
 	}
 
 	msg, err := c.readHandshake()
@@ -632,10 +694,11 @@ func (hs *serverHandshakeState) sendSessionTicket() error {
 
 	var err error
 	state := sessionState{
-		vers:         c.vers,
-		cipherSuite:  hs.suite.id,
-		masterSecret: hs.masterSecret,
-		certificates: hs.certsFromClient,
+		vers:          c.vers,
+		cipherSuite:   hs.suite.id,
+		masterSecret:  hs.masterSecret,
+		certificates:  hs.certsFromClient,
+		handshakeHash: hs.finishedHash.server.Sum(nil),
 	}
 	m.ticket, err = c.encryptTicket(&state)
 	if err != nil {
@@ -787,7 +850,7 @@ func (c *Conn) tryCipherSuite(id uint16, supportedCipherSuites []uint16, version
 			if (candidate.flags&suiteECDSA != 0) != ecdsaOk {
 				continue
 			}
-			if version < VersionTLS12 && candidate.flags&suiteTLS12 != 0 {
+			if !c.config.Bugs.SkipCipherVersionCheck && version < VersionTLS12 && candidate.flags&suiteTLS12 != 0 {
 				continue
 			}
 			if c.isDTLS && candidate.flags&suiteNoDTLS != 0 {

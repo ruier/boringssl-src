@@ -48,6 +48,20 @@ static const TestConfig *GetConfigPtr(SSL *ssl) {
   return (const TestConfig *)SSL_get_ex_data(ssl, g_ex_data_index);
 }
 
+static EVP_PKEY *LoadPrivateKey(const std::string &file) {
+  BIO *bio = BIO_new(BIO_s_file());
+  if (bio == NULL) {
+    return NULL;
+  }
+  if (!BIO_read_filename(bio, file.c_str())) {
+    BIO_free(bio);
+    return NULL;
+  }
+  EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+  BIO_free(bio);
+  return pkey;
+}
+
 static int early_callback_called = 0;
 
 static int select_certificate_callback(const struct ssl_early_callback_ctx *ctx) {
@@ -125,6 +139,29 @@ static int next_proto_select_callback(SSL* ssl,
   return SSL_TLSEXT_ERR_OK;
 }
 
+static int alpn_select_callback(SSL* ssl,
+                                const uint8_t** out,
+                                uint8_t* outlen,
+                                const uint8_t* in,
+                                unsigned inlen,
+                                void* arg) {
+  const TestConfig *config = GetConfigPtr(ssl);
+  if (config->select_alpn.empty())
+    return SSL_TLSEXT_ERR_NOACK;
+
+  if (!config->expected_advertised_alpn.empty() &&
+      (config->expected_advertised_alpn.size() != inlen ||
+       memcmp(config->expected_advertised_alpn.data(),
+              in, inlen) != 0)) {
+    fprintf(stderr, "bad ALPN select callback inputs\n");
+    exit(1);
+  }
+
+  *out = (const uint8_t*)config->select_alpn.data();
+  *outlen = config->select_alpn.size();
+  return SSL_TLSEXT_ERR_OK;
+}
+
 static int cookie_generate_callback(SSL *ssl, uint8_t *cookie, size_t *cookie_len) {
   *cookie_len = 32;
   memset(cookie, 42, *cookie_len);
@@ -199,11 +236,18 @@ static SSL_CTX *setup_ctx(const TestConfig *config) {
 
   SSL_CTX_set_next_protos_advertised_cb(
       ssl_ctx, next_protos_advertised_callback, NULL);
-  SSL_CTX_set_next_proto_select_cb(
-      ssl_ctx, next_proto_select_callback, NULL);
+  if (!config->select_next_proto.empty()) {
+    SSL_CTX_set_next_proto_select_cb(ssl_ctx, next_proto_select_callback, NULL);
+  }
+
+  if (!config->select_alpn.empty()) {
+    SSL_CTX_set_alpn_select_cb(ssl_ctx, alpn_select_callback, NULL);
+  }
 
   SSL_CTX_set_cookie_generate_cb(ssl_ctx, cookie_generate_callback);
   SSL_CTX_set_cookie_verify_cb(ssl_ctx, cookie_verify_callback);
+
+  ssl_ctx->tlsext_channel_id_enabled_new = 1;
 
   DH_free(dh);
   return ssl_ctx;
@@ -300,6 +344,33 @@ static int do_exchange(SSL_SESSION **out_session,
   if (config->cookie_exchange) {
     SSL_set_options(ssl, SSL_OP_COOKIE_EXCHANGE);
   }
+  if (config->tls_d5_bug) {
+    SSL_set_options(ssl, SSL_OP_TLS_D5_BUG);
+  }
+  if (!config->expected_channel_id.empty()) {
+    SSL_enable_tls_channel_id(ssl);
+  }
+  if (!config->send_channel_id.empty()) {
+    EVP_PKEY *pkey = LoadPrivateKey(config->send_channel_id);
+    if (pkey == NULL) {
+      BIO_print_errors_fp(stdout);
+      return 1;
+    }
+    SSL_enable_tls_channel_id(ssl);
+    if (!SSL_set1_tls_channel_id(ssl, pkey)) {
+      EVP_PKEY_free(pkey);
+      BIO_print_errors_fp(stdout);
+      return 1;
+    }
+    EVP_PKEY_free(pkey);
+  }
+  if (!config->host_name.empty()) {
+    SSL_set_tlsext_host_name(ssl, config->host_name.c_str());
+  }
+  if (!config->advertise_alpn.empty()) {
+    SSL_set_alpn_protos(ssl, (const uint8_t *)config->advertise_alpn.data(),
+                        config->advertise_alpn.size());
+  }
 
   BIO *bio = BIO_new_fd(fd, 1 /* take ownership */);
   if (bio == NULL) {
@@ -340,8 +411,9 @@ static int do_exchange(SSL_SESSION **out_session,
     return 2;
   }
 
-  if (is_resume && !SSL_session_reused(ssl)) {
-    fprintf(stderr, "session was not reused\n");
+  if (is_resume && (SSL_session_reused(ssl) == config->expect_session_miss)) {
+    fprintf(stderr, "session was%s reused\n",
+            SSL_session_reused(ssl) ? "" : " not");
     return 2;
   }
 
@@ -363,7 +435,7 @@ static int do_exchange(SSL_SESSION **out_session,
   if (!config->expected_certificate_types.empty()) {
     uint8_t *certificate_types;
     int num_certificate_types =
-      SSL_get0_certificate_types(ssl, &certificate_types);
+        SSL_get0_certificate_types(ssl, &certificate_types);
     if (num_certificate_types !=
         (int)config->expected_certificate_types.size() ||
         memcmp(certificate_types,
@@ -382,6 +454,32 @@ static int do_exchange(SSL_SESSION **out_session,
         memcmp(next_proto, config->expected_next_proto.data(),
                next_proto_len) != 0) {
       fprintf(stderr, "negotiated next proto mismatch\n");
+      return 2;
+    }
+  }
+
+  if (!config->expected_alpn.empty()) {
+    const uint8_t *alpn_proto;
+    unsigned alpn_proto_len;
+    SSL_get0_alpn_selected(ssl, &alpn_proto, &alpn_proto_len);
+    if (alpn_proto_len != config->expected_alpn.size() ||
+        memcmp(alpn_proto, config->expected_alpn.data(),
+               alpn_proto_len) != 0) {
+      fprintf(stderr, "negotiated alpn proto mismatch\n");
+      return 2;
+    }
+  }
+
+  if (!config->expected_channel_id.empty()) {
+    uint8_t channel_id[64];
+    if (!SSL_get_tls_channel_id(ssl, channel_id, sizeof(channel_id))) {
+      fprintf(stderr, "no channel id negotiated\n");
+      return 2;
+    }
+    if (config->expected_channel_id.size() != 64 ||
+        memcmp(config->expected_channel_id.data(),
+               channel_id, 64) != 0) {
+      fprintf(stderr, "channel id mismatch\n");
       return 2;
     }
   }
@@ -423,6 +521,12 @@ static int do_exchange(SSL_SESSION **out_session,
       }
     }
   } else {
+    if (config->shim_writes_first) {
+      int w;
+      do {
+        w = SSL_write(ssl, "hello", 5);
+      } while (config->async && retry_async(ssl, w, bio));
+    }
     for (;;) {
       uint8_t buf[512];
       int n;

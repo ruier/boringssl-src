@@ -172,6 +172,13 @@ SSL3_ENC_METHOD ssl3_undef_enc_method={
 		 int use_context)) ssl_undefined_function,
 	};
 
+/* Some error codes are special. Ensure the make_errors.go script
+ * never regresses this. */
+OPENSSL_COMPILE_ASSERT(
+	SSL_R_TLSV1_ALERT_NO_RENEGOTIATION ==
+		SSL_AD_NO_RENEGOTIATION + SSL_AD_REASON_OFFSET,
+	ssl_alert_reason_code_mismatch);
+
 int SSL_clear(SSL *s)
 	{
 
@@ -336,15 +343,8 @@ SSL *SSL_new(SSL_CTX *ctx)
 	s->tlsext_debug_cb = 0;
 	s->tlsext_debug_arg = NULL;
 	s->tlsext_ticket_expected = 0;
-	s->tlsext_status_type = -1;
-	s->tlsext_status_expected = 0;
-	s->tlsext_ocsp_ids = NULL;
-	s->tlsext_ocsp_exts = NULL;
-	s->tlsext_ocsp_resp = NULL;
-	s->tlsext_ocsp_resplen = -1;
 	CRYPTO_add(&ctx->references,1,CRYPTO_LOCK_SSL_CTX);
 	s->initial_ctx=ctx;
-#ifndef OPENSSL_NO_EC
 	if (ctx->tlsext_ecpointformatlist)
 		{
 		s->tlsext_ecpointformatlist =
@@ -365,10 +365,7 @@ SSL *SSL_new(SSL_CTX *ctx)
 		s->tlsext_ellipticcurvelist_length = 
 					ctx->tlsext_ellipticcurvelist_length;
 		}
-#endif
-# ifndef OPENSSL_NO_NEXTPROTONEG
 	s->next_proto_negotiated = NULL;
-# endif
 
 	if (s->ctx->alpn_client_proto_list)
 		{
@@ -403,6 +400,12 @@ SSL *SSL_new(SSL_CTX *ctx)
 		}
 	s->psk_client_callback=ctx->psk_client_callback;
 	s->psk_server_callback=ctx->psk_server_callback;
+
+	if (!s->server)
+		{
+		s->signed_cert_timestamps_enabled = s->ctx->signed_cert_timestamps_enabled;
+		s->ocsp_stapling_enabled = s->ctx->ocsp_stapling_enabled;
+		}
 
 	return(s);
 err:
@@ -669,20 +672,8 @@ void SSL_free(SSL *s)
 	if (s->tlsext_hostname)
 		OPENSSL_free(s->tlsext_hostname);
 	if (s->initial_ctx) SSL_CTX_free(s->initial_ctx);
-#ifndef OPENSSL_NO_EC
 	if (s->tlsext_ecpointformatlist) OPENSSL_free(s->tlsext_ecpointformatlist);
 	if (s->tlsext_ellipticcurvelist) OPENSSL_free(s->tlsext_ellipticcurvelist);
-#endif /* OPENSSL_NO_EC */
-	if (s->tlsext_ocsp_exts)
-		sk_X509_EXTENSION_pop_free(s->tlsext_ocsp_exts,
-						X509_EXTENSION_free);
-        /* TODO(fork): OCSP support */
-#if 0
-	if (s->tlsext_ocsp_ids)
-		sk_OCSP_RESPID_pop_free(s->tlsext_ocsp_ids, OCSP_RESPID_free);
-#endif
-	if (s->tlsext_ocsp_resp)
-		OPENSSL_free(s->tlsext_ocsp_resp);
 	if (s->alpn_client_proto_list)
 		OPENSSL_free(s->alpn_client_proto_list);
 	if (s->tlsext_channel_id_private)
@@ -698,10 +689,8 @@ void SSL_free(SSL *s)
 
 	if (s->ctx) SSL_CTX_free(s->ctx);
 
-#if !defined(OPENSSL_NO_NEXTPROTONEG)
 	if (s->next_proto_negotiated)
 		OPENSSL_free(s->next_proto_negotiated);
-#endif
 
         if (s->srtp_profiles)
             sk_SRTP_PROTECTION_PROFILE_free(s->srtp_profiles);
@@ -1097,7 +1086,7 @@ int SSL_shutdown(SSL *s)
 		return -1;
 		}
 
-	if ((s != NULL) && !SSL_in_init(s))
+	if (!SSL_in_init(s))
 		return(s->method->ssl_shutdown(s));
 	else
 		return(1);
@@ -1162,11 +1151,8 @@ long SSL_ctrl(SSL *s,int cmd,long larg,void *parg)
 		s->max_cert_list=larg;
 		return(l);
 	case SSL_CTRL_SET_MTU:
-#ifndef OPENSSL_NO_DTLS1
 		if (larg < (long)dtls1_min_mtu())
 			return 0;
-#endif
-
 		if (SSL_IS_DTLS(s))
 			{
 			s->d1->mtu = larg;
@@ -1675,6 +1661,63 @@ int SSL_get_servername_type(const SSL *s)
 	return -1;
 	}
 
+void SSL_CTX_enable_signed_cert_timestamps(SSL_CTX *ctx)
+	{
+	ctx->signed_cert_timestamps_enabled = 1;
+	}
+
+int SSL_enable_signed_cert_timestamps(SSL *ssl)
+	{
+	/* Currently not implemented server-side. */
+	if (ssl->server)
+		return 0;
+
+	ssl->signed_cert_timestamps_enabled = 1;
+	return 1;
+	}
+
+void SSL_CTX_enable_ocsp_stapling(SSL_CTX *ctx)
+	{
+	ctx->ocsp_stapling_enabled = 1;
+	}
+
+int SSL_enable_ocsp_stapling(SSL *ssl)
+	{
+	/* Currently not implemented server-side. */
+	if (ssl->server)
+		return 0;
+	ssl->ocsp_stapling_enabled = 1;
+	return 1;
+	}
+
+void SSL_get0_signed_cert_timestamp_list(const SSL *ssl, uint8_t **out, size_t *out_len)
+	{
+	SSL_SESSION *session = ssl->session;
+
+	*out_len = 0;
+	*out = NULL;
+	if (ssl->server)
+		return;
+	if (!session || !session->tlsext_signed_cert_timestamp_list)
+		return;
+	*out = session->tlsext_signed_cert_timestamp_list;
+	*out_len = session->tlsext_signed_cert_timestamp_list_length;
+	}
+
+void SSL_get0_ocsp_response(const SSL *ssl, uint8_t **out, size_t *out_len)
+	{
+	SSL_SESSION *session = ssl->session;
+
+	*out_len = 0;
+	*out = NULL;
+	if (ssl->server)
+		return;
+	if (!session || !session->ocsp_response)
+		return;
+	*out = session->ocsp_response;
+	*out_len = session->ocsp_response_length;
+	}
+
 /* SSL_select_next_proto implements the standard protocol selection. It is
  * expected that this function is called from the callback set by
  * SSL_CTX_set_next_proto_select_cb.
@@ -1741,7 +1784,6 @@ int SSL_select_next_proto(unsigned char **out, unsigned char *outlen, const unsi
 	return status;
 	}
 
-# ifndef OPENSSL_NO_NEXTPROTONEG
 /* SSL_get0_next_proto_negotiated sets *data and *len to point to the client's
  * requested protocol for this connection and returns 0. If the client didn't
  * request any protocol, then *data is set to NULL.
@@ -1790,7 +1832,6 @@ void SSL_CTX_set_next_proto_select_cb(SSL_CTX *ctx, int (*cb) (SSL *s, unsigned 
 	ctx->next_proto_select_cb = cb;
 	ctx->next_proto_select_cb_arg = arg;
 	}
-# endif
 
 /* SSL_CTX_set_alpn_protos sets the ALPN protocol list on |ctx| to |protos|.
  * |protos| must be in wire-format (i.e. a series of non-empty, 8-bit
@@ -2003,10 +2044,8 @@ SSL_CTX *SSL_CTX_new(const SSL_METHOD *meth)
 	ret->tlsext_status_cb = 0;
 	ret->tlsext_status_arg = NULL;
 
-# ifndef OPENSSL_NO_NEXTPROTONEG
 	ret->next_protos_advertised_cb = 0;
 	ret->next_proto_select_cb = 0;
-# endif
 	ret->psk_identity_hint=NULL;
 	ret->psk_client_callback=NULL;
 	ret->psk_server_callback=NULL;
@@ -2085,17 +2124,18 @@ void SSL_CTX_free(SSL_CTX *a)
 	if (a->psk_identity_hint)
 		OPENSSL_free(a->psk_identity_hint);
 
-# ifndef OPENSSL_NO_EC
 	if (a->tlsext_ecpointformatlist)
 		OPENSSL_free(a->tlsext_ecpointformatlist);
 	if (a->tlsext_ellipticcurvelist)
 		OPENSSL_free(a->tlsext_ellipticcurvelist);
-# endif /* OPENSSL_NO_EC */
 	if (a->alpn_client_proto_list != NULL)
 		OPENSSL_free(a->alpn_client_proto_list);
 
 	if (a->tlsext_channel_id_private)
 		EVP_PKEY_free(a->tlsext_channel_id_private);
+
+	if (a->keylog_bio)
+		BIO_free(a->keylog_bio);
 
 	OPENSSL_free(a);
 	}
@@ -2142,34 +2182,20 @@ void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 	CERT_PKEY *cpk;
 	int rsa_enc,rsa_sign,dh_tmp;
 	unsigned long mask_k,mask_a;
-#ifndef OPENSSL_NO_ECDSA
 	int have_ecc_cert, ecdsa_ok;
-#endif
-#ifndef OPENSSL_NO_ECDH
 	int have_ecdh_tmp;
-#endif
-#ifndef OPENSSL_NO_EC
 	X509 *x = NULL;
-#endif
 	if (c == NULL) return;
 
-#ifndef OPENSSL_NO_DH
 	dh_tmp=(c->dh_tmp != NULL || c->dh_tmp_cb != NULL);
-#else
-	dh_tmp=0;
-#endif
 
-#ifndef OPENSSL_NO_ECDH
 	have_ecdh_tmp=(c->ecdh_tmp || c->ecdh_tmp_cb || c->ecdh_tmp_auto);
-#endif
 	cpk= &(c->pkeys[SSL_PKEY_RSA_ENC]);
 	rsa_enc= cpk->valid_flags & CERT_PKEY_VALID;
 	cpk= &(c->pkeys[SSL_PKEY_RSA_SIGN]);
 	rsa_sign= cpk->valid_flags & CERT_PKEY_SIGN;
 	cpk= &(c->pkeys[SSL_PKEY_ECC]);
-#ifndef OPENSSL_NO_EC
 	have_ecc_cert= cpk->valid_flags & CERT_PKEY_VALID;
-#endif
 	mask_k=0;
 	mask_a=0;
 
@@ -2194,7 +2220,6 @@ void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 
 	/* An ECC certificate may be usable for ECDSA cipher suites depending on
          * the key usage extension. */
-#ifndef OPENSSL_NO_EC
 	if (have_ecc_cert)
 		{
 		cpk = &c->pkeys[SSL_PKEY_ECC];
@@ -2205,21 +2230,16 @@ void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 		    (x->ex_kusage & X509v3_KU_DIGITAL_SIGNATURE) : 1;
 		if (!(cpk->valid_flags & CERT_PKEY_SIGN))
 			ecdsa_ok = 0;
-#ifndef OPENSSL_NO_ECDSA
 		if (ecdsa_ok)
 			{
 			mask_a|=SSL_aECDSA;
 			}
-#endif
 		}
-#endif
 
-#ifndef OPENSSL_NO_ECDH
 	if (have_ecdh_tmp)
 		{
 		mask_k|=SSL_kEECDH;
 		}
-#endif
 
 	mask_k |= SSL_kPSK;
 	mask_a |= SSL_aPSK;
@@ -2233,7 +2253,6 @@ void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 #define ku_reject(x, usage) \
 	(((x)->ex_flags & EXFLAG_KUSAGE) && !((x)->ex_kusage & (usage)))
 
-#ifndef OPENSSL_NO_EC
 
 int ssl_check_srvr_ecc_cert_and_alg(X509 *x, SSL *s)
 	{
@@ -2263,7 +2282,6 @@ int ssl_check_srvr_ecc_cert_and_alg(X509 *x, SSL *s)
 	return 1;  /* all checks are ok */
 	}
 
-#endif
 
 static int ssl_get_server_cert_index(const SSL *s)
 	{
@@ -2348,14 +2366,14 @@ void ssl_update_cache(SSL *s,int mode)
 	 * and it would be rather hard to do anyway :-) */
 	if (s->session->session_id_length == 0) return;
 
-	i=s->session_ctx->session_cache_mode;
+	i=s->initial_ctx->session_cache_mode;
 	if ((i & mode) && (!s->hit)
 		&& ((i & SSL_SESS_CACHE_NO_INTERNAL_STORE)
-		    || SSL_CTX_add_session(s->session_ctx,s->session))
-		&& (s->session_ctx->new_session_cb != NULL))
+		    || SSL_CTX_add_session(s->initial_ctx,s->session))
+		&& (s->initial_ctx->new_session_cb != NULL))
 		{
 		CRYPTO_add(&s->session->references,1,CRYPTO_LOCK_SSL_SESSION);
-		if (!s->session_ctx->new_session_cb(s,s->session))
+		if (!s->initial_ctx->new_session_cb(s,s->session))
 			SSL_SESSION_free(s->session);
 		}
 
@@ -2364,10 +2382,10 @@ void ssl_update_cache(SSL *s,int mode)
 		((i & mode) == mode))
 		{
 		if (  (((mode & SSL_SESS_CACHE_CLIENT)
-			?s->session_ctx->stats.sess_connect_good
-			:s->session_ctx->stats.sess_accept_good) & 0xff) == 0xff)
+			?s->initial_ctx->stats.sess_connect_good
+			:s->initial_ctx->stats.sess_accept_good) & 0xff) == 0xff)
 			{
-			SSL_CTX_flush_sessions(s->session_ctx,(unsigned long)time(NULL));
+			SSL_CTX_flush_sessions(s->initial_ctx,(unsigned long)time(NULL));
 			}
 		}
 	}
@@ -2932,7 +2950,6 @@ RSA *cb(SSL *ssl,int is_export,int keylength)
  * \param dh the callback
  */
 
-#ifndef OPENSSL_NO_DH
 void SSL_CTX_set_tmp_dh_callback(SSL_CTX *ctx,DH *(*dh)(SSL *ssl,int is_export,
                                                         int keylength))
 	{
@@ -2944,9 +2961,7 @@ void SSL_set_tmp_dh_callback(SSL *ssl,DH *(*dh)(SSL *ssl,int is_export,
 	{
 	SSL_callback_ctrl(ssl,SSL_CTRL_SET_TMP_DH_CB,(void (*)(void))dh);
 	}
-#endif
 
-#ifndef OPENSSL_NO_ECDH
 void SSL_CTX_set_tmp_ecdh_callback(SSL_CTX *ctx,EC_KEY *(*ecdh)(SSL *ssl,int is_export,
                                                                 int keylength))
 	{
@@ -2958,7 +2973,6 @@ void SSL_set_tmp_ecdh_callback(SSL *ssl,EC_KEY *(*ecdh)(SSL *ssl,int is_export,
 	{
 	SSL_callback_ctrl(ssl,SSL_CTRL_SET_TMP_ECDH_CB,(void (*)(void))ecdh);
 	}
-#endif
 
 int SSL_CTX_use_psk_identity_hint(SSL_CTX *ctx, const char *identity_hint)
 	{
@@ -3081,6 +3095,122 @@ void SSL_set_msg_callback(SSL *ssl, void (*cb)(int write_p, int version, int con
 	SSL_callback_ctrl(ssl, SSL_CTRL_SET_MSG_CALLBACK, (void (*)(void))cb);
 	}
 
+void SSL_CTX_set_keylog_bio(SSL_CTX *ctx, BIO *keylog_bio)
+	{
+	if (ctx->keylog_bio != NULL)
+		BIO_free(ctx->keylog_bio);
+	ctx->keylog_bio = keylog_bio;
+	}
+
+static int cbb_add_hex(CBB *cbb, const uint8_t *in, size_t in_len)
+	{
+	static const char hextable[] = "0123456789abcdef";
+	uint8_t *out;
+	size_t i;
+
+	if (!CBB_add_space(cbb, &out, in_len * 2))
+		{
+		return 0;
+		}
+
+	for (i = 0; i < in_len; i++)
+		{
+		*(out++) = (uint8_t)hextable[in[i] >> 4];
+		*(out++) = (uint8_t)hextable[in[i] & 0xf];
+		}
+	return 1;
+	}
+
+int ssl_ctx_log_rsa_client_key_exchange(SSL_CTX *ctx,
+	const uint8_t *encrypted_premaster, size_t encrypted_premaster_len,
+	const uint8_t *premaster, size_t premaster_len)
+	{
+	BIO *bio = ctx->keylog_bio;
+	CBB cbb;
+	uint8_t *out;
+	size_t out_len;
+	int ret;
+
+	if (bio == NULL)
+		{
+		return 1;
+		}
+
+	if (encrypted_premaster_len < 8)
+		{
+		OPENSSL_PUT_ERROR(SSL, ssl_ctx_log_rsa_client_key_exchange, ERR_R_INTERNAL_ERROR);
+		return 0;
+		}
+
+	if (!CBB_init(&cbb, 4 + 16 + 1 + premaster_len*2 + 1))
+		{
+		return 0;
+		}
+	if (!CBB_add_bytes(&cbb, (const uint8_t*)"RSA ", 4) ||
+		/* Only the first 8 bytes of the encrypted premaster secret are
+		 * logged. */
+		!cbb_add_hex(&cbb, encrypted_premaster, 8) ||
+		!CBB_add_bytes(&cbb, (const uint8_t*)" ", 1) ||
+		!cbb_add_hex(&cbb, premaster, premaster_len) ||
+		!CBB_add_bytes(&cbb, (const uint8_t*)"\n", 1) ||
+		!CBB_finish(&cbb, &out, &out_len))
+		{
+		CBB_cleanup(&cbb);
+		return 0;
+		}
+
+	CRYPTO_w_lock(CRYPTO_LOCK_SSL_CTX);
+	ret = BIO_write(bio, out, out_len) >= 0 && BIO_flush(bio);
+	CRYPTO_w_unlock(CRYPTO_LOCK_SSL_CTX);
+
+	OPENSSL_free(out);
+	return ret;
+	}
+
+int ssl_ctx_log_master_secret(SSL_CTX *ctx,
+	const uint8_t *client_random, size_t client_random_len,
+	const uint8_t *master, size_t master_len)
+	{
+	BIO *bio = ctx->keylog_bio;
+	CBB cbb;
+	uint8_t *out;
+	size_t out_len;
+	int ret;
+
+	if (bio == NULL)
+		{
+		return 1;
+		}
+
+	if (client_random_len != 32)
+		{
+		OPENSSL_PUT_ERROR(SSL, ssl_ctx_log_master_secret, ERR_R_INTERNAL_ERROR);
+		return 0;
+		}
+
+	if (!CBB_init(&cbb, 14 + 64 + 1 + master_len*2 + 1))
+		{
+		return 0;
+		}
+	if (!CBB_add_bytes(&cbb, (const uint8_t*)"CLIENT_RANDOM ", 14) ||
+		!cbb_add_hex(&cbb, client_random, 32) ||
+		!CBB_add_bytes(&cbb, (const uint8_t*)" ", 1) ||
+		!cbb_add_hex(&cbb, master, master_len) ||
+		!CBB_add_bytes(&cbb, (const uint8_t*)"\n", 1) ||
+		!CBB_finish(&cbb, &out, &out_len))
+		{
+		CBB_cleanup(&cbb);
+		return 0;
+		}
+
+	CRYPTO_w_lock(CRYPTO_LOCK_SSL_CTX);
+	ret = BIO_write(bio, out, out_len) >= 0 && BIO_flush(bio);
+	CRYPTO_w_unlock(CRYPTO_LOCK_SSL_CTX);
+
+	OPENSSL_free(out);
+	return ret;
+	}
+
 int SSL_cutthrough_complete(const SSL *s)
 	{
 	return (!s->server &&                 /* cutthrough only applies to clients */
@@ -3112,11 +3242,7 @@ int ssl3_can_cutthrough(const SSL *s)
 		return 0;
 
 	/* require ALPN or NPN extension */
-	if (!s->s3->alpn_selected
-#ifndef OPENSSL_NO_NEXTPROTONEG
-		&& !s->s3->next_proto_neg_seen
-#endif
-	)
+	if (!s->s3->alpn_selected && !s->s3->next_proto_neg_seen)
 		{
 		return 0;
 		}

@@ -298,7 +298,7 @@ void ERR_remove_thread_state(const CRYPTO_THREADID *tid) {
   OPENSSL_free(state);
 }
 
-int ERR_get_next_error_library() {
+int ERR_get_next_error_library(void) {
   err_fns_check();
   return ERRFN(get_next_library)();
 }
@@ -694,6 +694,7 @@ extern const ERR_STRING_DATA EC_error_string_data[];
 extern const ERR_STRING_DATA EVP_error_string_data[];
 extern const ERR_STRING_DATA OBJ_error_string_data[];
 extern const ERR_STRING_DATA PEM_error_string_data[];
+extern const ERR_STRING_DATA PKCS8_error_string_data[];
 extern const ERR_STRING_DATA RSA_error_string_data[];
 extern const ERR_STRING_DATA X509V3_error_string_data[];
 extern const ERR_STRING_DATA X509_error_string_data[];
@@ -746,6 +747,7 @@ static void err_load_strings(void) {
   ERR_load_strings(EVP_error_string_data);
   ERR_load_strings(OBJ_error_string_data);
   ERR_load_strings(PEM_error_string_data);
+  ERR_load_strings(PKCS8_error_string_data);
   ERR_load_strings(RSA_error_string_data);
   ERR_load_strings(X509V3_error_string_data);
   ERR_load_strings(X509_error_string_data);
@@ -760,11 +762,11 @@ void ERR_load_strings(const ERR_STRING_DATA *str) {
   }
 }
 
-void ERR_load_crypto_strings() { err_load_strings(); }
+void ERR_load_crypto_strings(void) { err_load_strings(); }
 
-void ERR_free_strings() {
+void ERR_free_strings(void) {
   err_fns_check();
   ERRFN(shutdown)();
 }
 
-void ERR_load_BIO_strings() {}
+void ERR_load_BIO_strings(void) {}

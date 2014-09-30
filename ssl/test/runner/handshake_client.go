@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/subtle"
 	"crypto/x509"
@@ -42,6 +43,18 @@ func (c *Conn) clientHandshake() error {
 	c.sendHandshakeSeq = 0
 	c.recvHandshakeSeq = 0
 
+	nextProtosLength := 0
+	for _, proto := range c.config.NextProtos {
+		if l := len(proto); l == 0 || l > 255 {
+			return errors.New("tls: invalid NextProtos value")
+		} else {
+			nextProtosLength += 1 + l
+		}
+	}
+	if nextProtosLength > 0xffff {
+		return errors.New("tls: NextProtos values too large")
+	}
+
 	hello := &clientHelloMsg{
 		isDTLS:              c.isDTLS,
 		vers:                c.config.maxVersion(),
@@ -53,7 +66,10 @@ func (c *Conn) clientHandshake() error {
 		supportedPoints:     []uint8{pointFormatUncompressed},
 		nextProtoNeg:        len(c.config.NextProtos) > 0,
 		secureRenegotiation: true,
+		alpnProtocols:       c.config.NextProtos,
 		duplicateExtension:  c.config.Bugs.DuplicateExtension,
+		channelIDSupported:  c.config.ChannelID != nil,
+		npnLast:             c.config.Bugs.SwapNPNAndALPN,
 	}
 
 	if c.config.Bugs.SendClientVersion != 0 {
@@ -238,7 +254,7 @@ NextCipherSuite:
 		if err := hs.readFinished(); err != nil {
 			return err
 		}
-		if err := hs.sendFinished(); err != nil {
+		if err := hs.sendFinished(isResume); err != nil {
 			return err
 		}
 	} else {
@@ -248,7 +264,7 @@ NextCipherSuite:
 		if err := hs.establishKeys(); err != nil {
 			return err
 		}
-		if err := hs.sendFinished(); err != nil {
+		if err := hs.sendFinished(isResume); err != nil {
 			return err
 		}
 		if err := hs.readSessionTicket(); err != nil {
@@ -472,6 +488,8 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 		c.writeRecord(recordTypeHandshake, ckx.marshal())
 	}
 
+	hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.hello.random, hs.serverHello.random)
+
 	if chainToSend != nil {
 		var signed []byte
 		certVerify := &certificateVerifyMsg{
@@ -485,7 +503,7 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 				break
 			}
 			var digest []byte
-			digest, _, err = hs.finishedHash.hashForClientCertificate(certVerify.signatureAndHash)
+			digest, _, err = hs.finishedHash.hashForClientCertificate(certVerify.signatureAndHash, hs.masterSecret)
 			if err != nil {
 				break
 			}
@@ -501,7 +519,7 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 			}
 			var digest []byte
 			var hashFunc crypto.Hash
-			digest, hashFunc, err = hs.finishedHash.hashForClientCertificate(certVerify.signatureAndHash)
+			digest, hashFunc, err = hs.finishedHash.hashForClientCertificate(certVerify.signatureAndHash, hs.masterSecret)
 			if err != nil {
 				break
 			}
@@ -519,7 +537,8 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 		c.writeRecord(recordTypeHandshake, certVerify.marshal())
 	}
 
-	hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.hello.random, hs.serverHello.random)
+	hs.finishedHash.discardHandshakeBuffer()
+
 	return nil
 }
 
@@ -560,15 +579,42 @@ func (hs *clientHandshakeState) processServerHello() (bool, error) {
 		return false, errors.New("tls: server selected unsupported compression format")
 	}
 
-	if !hs.hello.nextProtoNeg && hs.serverHello.nextProtoNeg {
+	clientDidNPN := hs.hello.nextProtoNeg
+	clientDidALPN := len(hs.hello.alpnProtocols) > 0
+	serverHasNPN := hs.serverHello.nextProtoNeg
+	serverHasALPN := len(hs.serverHello.alpnProtocol) > 0
+
+	if !clientDidNPN && serverHasNPN {
 		c.sendAlert(alertHandshakeFailure)
 		return false, errors.New("server advertised unrequested NPN extension")
+	}
+
+	if !clientDidALPN && serverHasALPN {
+		c.sendAlert(alertHandshakeFailure)
+		return false, errors.New("server advertised unrequested ALPN extension")
+	}
+
+	if serverHasNPN && serverHasALPN {
+		c.sendAlert(alertHandshakeFailure)
+		return false, errors.New("server advertised both NPN and ALPN extensions")
+	}
+
+	if serverHasALPN {
+		c.clientProtocol = hs.serverHello.alpnProtocol
+		c.clientProtocolFallback = false
+		c.usedALPN = true
+	}
+
+	if !hs.hello.channelIDSupported && hs.serverHello.channelIDRequested {
+		c.sendAlert(alertHandshakeFailure)
+		return false, errors.New("server advertised unrequested Channel ID extension")
 	}
 
 	if hs.serverResumedSession() {
 		// Restore masterSecret and peerCerts from previous state
 		hs.masterSecret = hs.session.masterSecret
 		c.peerCertificates = hs.session.serverCertificates
+		hs.finishedHash.discardHandshakeBuffer()
 		return true, nil
 	}
 	return false, nil
@@ -619,20 +665,22 @@ func (hs *clientHandshakeState) readSessionTicket() error {
 		c.sendAlert(alertUnexpectedMessage)
 		return unexpectedMessageError(sessionTicketMsg, msg)
 	}
-	hs.writeServerHash(sessionTicketMsg.marshal())
 
 	hs.session = &ClientSessionState{
 		sessionTicket:      sessionTicketMsg.ticket,
 		vers:               c.vers,
 		cipherSuite:        hs.suite.id,
 		masterSecret:       hs.masterSecret,
+		handshakeHash:      hs.finishedHash.server.Sum(nil),
 		serverCertificates: c.peerCertificates,
 	}
+
+	hs.writeServerHash(sessionTicketMsg.marshal())
 
 	return nil
 }
 
-func (hs *clientHandshakeState) sendFinished() error {
+func (hs *clientHandshakeState) sendFinished(isResume bool) error {
 	c := hs.c
 
 	var postCCSBytes []byte
@@ -648,6 +696,34 @@ func (hs *clientHandshakeState) sendFinished() error {
 		hs.writeHash(nextProtoBytes, seqno)
 		seqno++
 		postCCSBytes = append(postCCSBytes, nextProtoBytes...)
+	}
+
+	if hs.serverHello.channelIDRequested {
+		encryptedExtensions := new(encryptedExtensionsMsg)
+		if c.config.ChannelID.Curve != elliptic.P256() {
+			return fmt.Errorf("tls: Channel ID is not on P-256.")
+		}
+		var resumeHash []byte
+		if isResume {
+			resumeHash = hs.session.handshakeHash
+		}
+		r, s, err := ecdsa.Sign(c.config.rand(), c.config.ChannelID, hs.finishedHash.hashForChannelID(resumeHash))
+		if err != nil {
+			return err
+		}
+		channelID := make([]byte, 128)
+		writeIntPadded(channelID[0:32], c.config.ChannelID.X)
+		writeIntPadded(channelID[32:64], c.config.ChannelID.Y)
+		writeIntPadded(channelID[64:96], r)
+		writeIntPadded(channelID[96:128], s)
+		encryptedExtensions.channelID = channelID
+
+		c.channelID = &c.config.ChannelID.PublicKey
+
+		encryptedExtensionsBytes := encryptedExtensions.marshal()
+		hs.writeHash(encryptedExtensionsBytes, seqno)
+		seqno++
+		postCCSBytes = append(postCCSBytes, encryptedExtensionsBytes...)
 	}
 
 	finished := new(finishedMsg)
@@ -709,18 +785,28 @@ func clientSessionCacheKey(serverAddr net.Addr, config *Config) string {
 	return serverAddr.String()
 }
 
-// mutualProtocol finds the mutual Next Protocol Negotiation protocol given the
-// set of client and server supported protocols. The set of client supported
-// protocols must not be empty. It returns the resulting protocol and flag
+// mutualProtocol finds the mutual Next Protocol Negotiation or ALPN protocol
+// given list of possible protocols and a list of the preference order. The
+// first list must not be empty. It returns the resulting protocol and flag
 // indicating if the fallback case was reached.
-func mutualProtocol(clientProtos, serverProtos []string) (string, bool) {
-	for _, s := range serverProtos {
-		for _, c := range clientProtos {
+func mutualProtocol(protos, preferenceProtos []string) (string, bool) {
+	for _, s := range preferenceProtos {
+		for _, c := range protos {
 			if s == c {
 				return s, false
 			}
 		}
 	}
 
-	return clientProtos[0], true
+	return protos[0], true
+}
+
+// writeIntPadded writes x into b, padded up with leading zeros as
+// needed.
+func writeIntPadded(b []byte, x *big.Int) {
+	for i := range b {
+		b[i] = 0
+	}
+	xb := x.Bytes()
+	copy(b[len(b)-len(xb):], xb)
 }

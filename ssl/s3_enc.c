@@ -369,10 +369,8 @@ int ssl3_setup_key_block(SSL *s)
 
 		if (s->session->cipher != NULL)
 			{
-#ifndef OPENSSL_NO_RC4
 			if (s->session->cipher->algorithm_enc == SSL_RC4)
 				s->s3->need_record_splitting = 0;
-#endif
 			}
 		}
 
@@ -499,7 +497,7 @@ void ssl3_free_digest_list(SSL *s)
 
 void ssl3_finish_mac(SSL *s, const unsigned char *buf, int len)
 	{
-	if (s->s3->handshake_buffer && !(s->s3->flags & TLS1_FLAGS_KEEP_HANDSHAKE)) 
+	if (s->s3->handshake_buffer)
 		{
 		BIO_write (s->s3->handshake_buffer,(void *)buf,len);
 		} 
@@ -546,12 +544,9 @@ int ssl3_digest_cached_records(SSL *s)
 			s->s3->handshake_dgst[i]=NULL;
 			}
 		}
-	if (!(s->s3->flags & TLS1_FLAGS_KEEP_HANDSHAKE))
-		{
-		/* Free handshake_buffer BIO */
-		BIO_free(s->s3->handshake_buffer);
-		s->s3->handshake_buffer = NULL;
-		}
+	/* Free handshake_buffer BIO */
+	BIO_free(s->s3->handshake_buffer);
+	s->s3->handshake_buffer = NULL;
 
 	return 1;
 	}
